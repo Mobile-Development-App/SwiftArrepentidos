@@ -127,7 +127,7 @@ class PersistenceService: ObservableObject {
         guard ts > 0 else { return nil }
         return Date().timeIntervalSince1970 - ts
     }
-¿
+
     func isCacheStale(for key: String, maxAge: TimeInterval = 300) -> Bool {
         guard let age = getCacheAge(for: key) else { return true }
         return age > maxAge
