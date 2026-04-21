@@ -28,15 +28,15 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: .
-        excludes:
-          - "project.yml"
-          - ".git"
-          - "**/.DS_Store"
-          - "*.xcodeproj"
-          - "build"
-          - "DerivedData"
-          - ".*"
+      - InventarIAApp.swift
+      - ContentView.swift
+      - Models
+      - Services
+      - Theme
+      - Utils
+      - ViewModels
+      - Views
+      - Assets.xcassets
       - path: GoogleService-Info.plist
         buildPhase: resources
     settings:
