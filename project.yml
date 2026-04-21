@@ -28,15 +28,15 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: .
-        excludes:
-          - "project.yml"
-          - ".git"
-          - "**/.DS_Store"
-          - "*.xcodeproj"
-          - "build"
-          - "DerivedData"
-          - ".*"
+      - InventarIAApp.swift
+      - ContentView.swift
+      - Models
+      - Services
+      - Theme
+      - Utils
+      - ViewModels
+      - Views
+      - Assets.xcassets
       - path: GoogleService-Info.plist
         buildPhase: resources
     settings:
@@ -48,9 +48,11 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         DEVELOPMENT_TEAM: ""
         GENERATE_INFOPLIST_FILE: YES
-        CODE_SIGN_IDENTITY: ""
-        CODE_SIGNING_REQUIRED: "NO"
-        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: "YES"
+        CODE_SIGNING_ALLOWED: "YES"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_ENTITLEMENTS: InventarIA.entitlements
     dependencies:
       - package: Firebase
         product: FirebaseAuth
