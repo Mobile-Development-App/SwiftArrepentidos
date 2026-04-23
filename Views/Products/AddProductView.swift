@@ -8,6 +8,9 @@ struct AddProductView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.colorScheme) var colorScheme
 
+    // Open Food Facts lookup dependency
+    private let openFoodFactsRepo: OpenFoodFactsRepositoryProtocol = OpenFoodFactsRepository()
+
     @State private var name = ""
     @State private var sku = ""
     @State private var barcode = ""
@@ -21,7 +24,12 @@ struct AddProductView: View {
     @State private var expirationDate = Date()
     @State private var hasExpiration = false
     @State private var description = ""
+    @State private var imageURLString = ""
     @State private var showSuccess = false
+
+    // Open Food Facts lookup state
+    @State private var isLookingUpBarcode = false
+    @State private var lookupMessage: String?
 
     var isEditing: Bool { editingProduct != nil }
 
@@ -65,6 +73,16 @@ struct AddProductView: View {
                         formField(label: "Nombre del producto", placeholder: "Ej: Leche Entera 1L", text: $name)
                         formField(label: "SKU", placeholder: "Ej: DAI-001", text: $sku)
                         formField(label: "Código de barras", placeholder: "Ej: 7701234567890", text: $barcode, keyboardType: .numberPad)
+
+                        // Open Food Facts lookup
+                        openFoodFactsLookupButton
+
+                        if let lookupMessage {
+                            Text(lookupMessage)
+                                .font(AppTypography.captionFont)
+                                .foregroundColor(AppColors.textSecondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
 
                         // Category picker
                         VStack(alignment: .leading, spacing: 6) {
@@ -229,6 +247,62 @@ struct AddProductView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+
+    private var openFoodFactsLookupButton: some View {
+        Button {
+            Task { await lookupBarcode() }
+        } label: {
+            HStack(spacing: 8) {
+                if isLookingUpBarcode {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                } else {
+                    Image(systemName: "magnifyingglass")
+                }
+                Text(isLookingUpBarcode ? "Buscando..." : "Buscar en Open Food Facts")
+                    .font(AppTypography.calloutFont)
+                    .fontWeight(.medium)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .foregroundColor(AppColors.primary)
+            .background(AppColors.primary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .disabled(barcode.isEmpty || isLookingUpBarcode)
+    }
+
+    @MainActor
+    private func lookupBarcode() async {
+        isLookingUpBarcode = true
+        lookupMessage = nil
+        defer { isLookingUpBarcode = false }
+
+        do {
+            guard let result = try await openFoodFactsRepo.lookup(barcode: barcode) else {
+                lookupMessage = "Producto no encontrado en Open Food Facts"
+                return
+            }
+
+            // Pre-fill the form with fetched data (only empty fields)
+            if name.isEmpty { name = result.name }
+            if description.isEmpty, !result.brand.isEmpty {
+                description = result.brand
+            }
+            if supplier.isEmpty, !result.brand.isEmpty {
+                supplier = result.brand
+            }
+            if imageURLString.isEmpty, let image = result.imageURL {
+                imageURLString = image
+            }
+
+            lookupMessage = "Datos del producto rellenados ✓"
+        } catch {
+            lookupMessage = "Búsqueda falló: \(error.localizedDescription)"
+        }
+    }
+
+
     @ViewBuilder
     private func sectionView<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -279,6 +353,7 @@ struct AddProductView: View {
         minStock = "\(product.minStock)"
         location = product.location
         description = product.description
+        imageURLString = product.imageURL ?? ""
         if let expDate = product.expirationDate {
             hasExpiration = true
             expirationDate = expDate
@@ -306,7 +381,7 @@ struct AddProductView: View {
             minStock: Int(minStock) ?? 0,
             location: location,
             expirationDate: hasExpiration ? expirationDate : nil,
-            imageURL: nil,
+            imageURL: imageURLString.isEmpty ? nil : imageURLString,
             description: description,
             lastUpdated: Date(),
             isActive: true

@@ -7,10 +7,12 @@ enum APIError: LocalizedError {
     case conflict
     case validationError(String)
     case approvalRequired
-    case serverError(statusCode: Int)
+    case serverError(statusCode: Int, message: String?)
     case networkError(Error)
     case decodingError(Error)
     case offline
+    case invalidURL
+    case invalidResponse
     case unknown(String)
 
     var errorDescription: String? {
@@ -27,7 +29,10 @@ enum APIError: LocalizedError {
             return message
         case .approvalRequired:
             return "Esta accion requiere aprobacion de un gerente."
-        case .serverError(let code):
+        case .serverError(let code, let message):
+            if let message, !message.isEmpty {
+                return "Error del servidor (\(code)): \(message)"
+            }
             return "Error del servidor (\(code)). Intenta de nuevo."
         case .networkError:
             return "Error de conexion. Verifica tu internet."
@@ -35,6 +40,10 @@ enum APIError: LocalizedError {
             return "Error procesando la respuesta del servidor."
         case .offline:
             return "Sin conexion. Usando datos locales."
+        case .invalidURL:
+            return "URL invalida."
+        case .invalidResponse:
+            return "Respuesta del servidor invalida."
         case .unknown(let message):
             return message
         }
@@ -47,7 +56,7 @@ enum APIError: LocalizedError {
         case 404: return .notFound
         case 409: return .conflict
         case 400, 422: return .validationError(message ?? "Datos invalidos.")
-        case 500...599: return .serverError(statusCode: statusCode)
+        case 500...599: return .serverError(statusCode: statusCode, message: message)
         default: return .unknown(message ?? "Error desconocido.")
         }
     }
