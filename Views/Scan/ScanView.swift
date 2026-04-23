@@ -291,6 +291,8 @@ struct ScanView: View {
         }
     }
 
+
+
     private func handleBarcodeDetected(_ barcode: String) {
         withAnimation { scanState = .analyzing }
 
@@ -318,31 +320,61 @@ struct ScanView: View {
     }
 
     private func analyzeWithAI(barcode: String? = nil) {
-        Task {
-            let image = cameraService.capturedImage ?? UIImage()
-            let result = await aiService.analyze(image: image, barcode: barcode)
+    Task {
+        
+            let image = cameraService.capturedImage
+            await analyzeWithAIAsync(image: image, barcode: barcode)
+        }
+    }
 
-            let duplicates = inventoryViewModel.findDuplicates(name: result.name, barcode: barcode ?? "")
-
+    private func analyzeWithAIAsync(image: UIImage?, barcode: String?) async {
+        guard let image = image else {
             await MainActor.run {
                 let scanResult = ScannedProductResult(
-                    name: result.name.isEmpty ? "Producto Detectado" : result.name,
-                    brand: result.brand.isEmpty ? "Sin marca" : result.brand,
-                    category: result.category,
-                    barcode: barcode ?? result.barcode ?? "",
-                    suggestedPrice: result.suggestedPrice,
-                    confidence: max(result.confidence, 60),
-                    isDuplicate: !duplicates.isEmpty,
-                    similarProducts: duplicates
+                    name: "No se pudo capturar la imagen",
+                    brand: "",
+                    category: .other,
+                    barcode: barcode ?? "",
+                    suggestedPrice: 0,
+                    confidence: 0,
+                    isDuplicate: false,
+                    similarProducts: []
                 )
-
                 withAnimation {
-                    self.aiResult = result
                     self.detectedResult = scanResult
                     self.scanState = .complete
                 }
-                HapticManager.notification(.success)
+                HapticManager.notification(.error)
             }
+            return
+        }
+
+        let result = await aiService.analyze(image: image, barcode: barcode)
+        let duplicates = await MainActor.run {
+            inventoryViewModel.findDuplicates(name: result.name, barcode: barcode ?? "")
+        }
+
+        await MainActor.run {
+            //por si no detecta nada 
+            let hasData = !result.name.isEmpty || !result.brand.isEmpty || (result.barcode != nil && !(result.barcode?.isEmpty ?? true))
+
+            let scanResult = ScannedProductResult(
+                name: hasData ? (result.name.isEmpty ? "Producto sin nombre" : result.name) : "No se detectó producto",
+                brand: hasData && !result.brand.isEmpty ? result.brand : "Sin información",
+                category: result.category,
+                barcode: barcode ?? result.barcode ?? "",
+                suggestedPrice: result.suggestedPrice,
+                confidence: hasData ? max(result.confidence, 40) : 0,
+                isDuplicate: !duplicates.isEmpty,
+                similarProducts: duplicates
+            )
+
+            withAnimation {
+                self.aiResult = result
+                self.detectedResult = scanResult
+                self.scanState = .complete
+            }
+            HapticManager.notification(hasData ? .success : .warning)
         }
     }
 
