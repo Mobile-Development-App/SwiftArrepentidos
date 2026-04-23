@@ -1,5 +1,15 @@
 import SwiftUI
 
+// MARK: - UUID ↔ Backend
+extension UUID {
+    /// Backend (Firestore) stores document IDs in lowercase UUID format (from Node.js `uuidv4()`).
+    /// Swift's default `uuidString` is uppercase → causes NOT_FOUND on PATCH/DELETE/POST calls.
+    /// This property normalizes to lowercase for HTTP requests.
+    var apiString: String {
+        return uuidString.lowercased()
+    }
+}
+
 // MARK: - Number Formatting
 extension Double {
     var currencyFormatted: String {

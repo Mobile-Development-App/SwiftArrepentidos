@@ -73,23 +73,22 @@ final class APIClient {
     ) async throws -> T {
         let data = try await rawRequest(endpoint, method: method, body: body, queryParams: queryParams)
 
-        let rawString = String(data: data, encoding: .utf8) ?? "binary"
-        print("[APIClient] \(endpoint.path) response (\(data.count) bytes): \(rawString.prefix(300))")
+        #if DEBUG
+        print("[APIClient] \(endpoint.path) response (\(data.count) bytes)")
+        #endif
 
         // Strategy 1: Try { data: T } wrapper (used by /products, /alerts, /analytics/*)
         if let wrapped = try? decoder.decode(DataWrapper<T>.self, from: data) {
-            print("[APIClient] \(endpoint.path) decoded via DataWrapper")
             return wrapped.data
         }
 
         // Strategy 2: Try direct decode (used by /auth/login, /analytics/dashboard)
         do {
-            let result = try decoder.decode(T.self, from: data)
-            print("[APIClient] \(endpoint.path) decoded directly")
-            return result
+            return try decoder.decode(T.self, from: data)
         } catch {
-            print("[APIClient] ❌ Decode failed for \(endpoint.path): \(error)")
-            print("[APIClient] Full raw response: \(rawString.prefix(1000))")
+            #if DEBUG
+            print("[APIClient] ⚠️ Decode failed for \(endpoint.path)")
+            #endif
             throw APIError.decodingError(error)
         }
     }

@@ -55,13 +55,25 @@ final class AnalyticsRepository: AnalyticsRepositoryProtocol {
             throw APIError.offline
         }
 
-        print("[AnalyticsRepo] Fetching stock by category...")
         let dtos: [StockByCategoryDTO] = try await apiClient.request(.analyticsStockByCategory)
-        print("[AnalyticsRepo] Got \(dtos.count) stock category DTOs")
-        for dto in dtos {
-            print("[AnalyticsRepo] Category: \(dto.category ?? dto.categoryId ?? "nil"), totalStock=\(dto.totalStock ?? -1), productCount=\(dto.productCount ?? -1)")
+        let raw = dtos.map { $0.toDomain() }
+
+        // Dedupe + merge por nombre canónico (el backend devuelve "snacks" y "Snacks" por separado)
+        var merged: [String: StockLevelData] = [:]
+        for item in raw {
+            let key = Self.canonicalCategoryName(item.category)
+            if var existing = merged[key] {
+                existing.inStock += item.inStock
+                existing.lowStock += item.lowStock
+                existing.outOfStock += item.outOfStock
+                merged[key] = existing
+            } else {
+                var normalized = item
+                normalized.category = key
+                merged[key] = normalized
+            }
         }
-        return dtos.map { $0.toDomain() }
+        return Array(merged.values).sorted { $0.category < $1.category }
     }
 
     func fetchMargins() async throws -> [CategoryDistribution] {
@@ -69,23 +81,74 @@ final class AnalyticsRepository: AnalyticsRepositoryProtocol {
             throw APIError.offline
         }
 
-        print("[AnalyticsRepo] Fetching margins (via stock-by-category)...")
-        // Use stock-by-category data to build category distribution (grouped, not per-product)
+        // Reutilizamos stock-by-category, pero deduplicando estrictamente para el pie chart
         let dtos: [StockByCategoryDTO] = try await apiClient.request(.analyticsStockByCategory)
-        print("[AnalyticsRepo] Got \(dtos.count) DTOs for category distribution")
-        let totalCount = dtos.reduce(0) { $0 + ($1.productCount ?? $1.totalStock ?? $1.inStock ?? 0) }
-        return dtos.map { dto in
+
+        // Merge por nombre canónico
+        var merged: [String: (count: Int, value: Double)] = [:]
+        for dto in dtos {
+            let rawName = dto.category ?? dto.categoryId ?? "Otros"
+            let key = Self.canonicalCategoryName(rawName)
             let count = dto.productCount ?? dto.totalStock ?? dto.inStock ?? 0
-            let name = dto.category ?? dto.categoryId ?? "Otros"
-            // Capitalize first letter for display
-            let displayName = name.prefix(1).uppercased() + name.dropFirst()
-            return CategoryDistribution(
-                category: displayName,
-                count: count,
-                percentage: totalCount > 0 ? (Double(count) / Double(totalCount)) * 100 : 0,
-                value: dto.totalValue ?? Double(count)
+            let value = dto.totalValue ?? Double(count)
+            if let existing = merged[key] {
+                merged[key] = (count: existing.count + count, value: existing.value + value)
+            } else {
+                merged[key] = (count: count, value: value)
+            }
+        }
+
+        let totalCount = merged.values.reduce(0) { $0 + $1.count }
+        return merged.map { (key, val) in
+            CategoryDistribution(
+                category: key,
+                count: val.count,
+                percentage: totalCount > 0 ? (Double(val.count) / Double(totalCount)) * 100 : 0,
+                value: val.value
             )
         }
+        .sorted { $0.count > $1.count }  // más grande primero para mejor visual
+    }
+
+    /// Normaliza nombres de categoría: combina variantes de idioma y capitalización
+    /// en un único nombre canónico en español.
+    /// Ej: "snacks" / "Snacks" / "SNACKS" → "Snacks"
+    ///     "dairy" / "lacteos" / "lácteos" → "Lácteos"
+    ///     "other" / "otros" → "Otros"
+    static func canonicalCategoryName(_ rawName: String) -> String {
+        let lower = rawName.lowercased().trimmingCharacters(in: .whitespaces)
+        let mapping: [String: String] = [
+            "snacks": "Snacks",
+            "otros": "Otros",
+            "other": "Otros",
+            "bebidas": "Bebidas",
+            "beverages": "Bebidas",
+            "lacteos": "Lácteos",
+            "lácteos": "Lácteos",
+            "dairy": "Lácteos",
+            "limpieza": "Limpieza",
+            "cleaning": "Limpieza",
+            "cuidado personal": "Cuidado Personal",
+            "personalcare": "Cuidado Personal",
+            "higiene": "Cuidado Personal",
+            "granos": "Granos",
+            "grains": "Granos",
+            "frutas y verduras": "Frutas y Verduras",
+            "frutas": "Frutas y Verduras",
+            "fruits": "Frutas y Verduras",
+            "carnes": "Carnes",
+            "meat": "Carnes",
+            "panaderia": "Panadería",
+            "panadería": "Panadería",
+            "bakery": "Panadería",
+            "congelados": "Congelados",
+            "frozen": "Congelados",
+            "condimentos": "Condimentos",
+            "condiments": "Condimentos"
+        ]
+        if let mapped = mapping[lower] { return mapped }
+        // Fallback: capitalize la primera letra
+        return rawName.prefix(1).uppercased() + rawName.dropFirst()
     }
 
     func exportReport(type: String, format: String, dateFrom: String? = nil, dateTo: String? = nil) async throws -> ExportResponseDTO {

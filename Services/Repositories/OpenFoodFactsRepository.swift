@@ -30,7 +30,20 @@ final class OpenFoodFactsRepository: OpenFoodFactsRepositoryProtocol {
             throw APIError.offline
         }
 
-        guard let url = URL(string: "\(baseURL)/\(barcode).json") else {
+        // Validación: solo dígitos, máx 32 chars (previene URL injection)
+        let trimmed = barcode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.count <= 32,
+              trimmed.allSatisfy({ $0.isNumber }) else {
+            throw APIError.invalidURL
+        }
+
+        // Construir URL de forma segura (sin string interpolation directa)
+        guard var components = URLComponents(string: baseURL) else {
+            throw APIError.invalidURL
+        }
+        components.path += "/\(trimmed).json"
+        guard let url = components.url else {
             throw APIError.invalidURL
         }
 
@@ -57,13 +70,18 @@ final class OpenFoodFactsRepository: OpenFoodFactsRepositoryProtocol {
             throw APIError.serverError(statusCode: httpResponse.statusCode, message: nil)
         }
 
+        // Rechazar respuestas absurdamente grandes (>1MB) para evitar memory abuse
+        guard data.count < 1_000_000 else {
+            throw APIError.serverError(statusCode: 413, message: "Response too large")
+        }
+
         do {
             let decoded = try JSONDecoder().decode(OpenFoodFactsResponse.self, from: data)
             // status = 0 means the product is not in the database
             guard decoded.status == 1, let productDTO = decoded.product else {
                 return nil
             }
-            return productDTO.toDomain(barcode: barcode)
+            return productDTO.toDomain(barcode: trimmed)
         } catch {
             throw APIError.decodingError(error)
         }

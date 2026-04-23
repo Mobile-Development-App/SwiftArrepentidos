@@ -282,12 +282,22 @@ struct ScanView: View {
         withAnimation { scanState = .scanning }
         scanLineOffset = -100
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            if scanState == .scanning {
-                cameraService.capturePhoto()
-                withAnimation { scanState = .analyzing }
-                analyzeWithAI()
-            }
+        // Fix crítico: await la captura ANTES de analizar (evita analizar imagen vacía)
+        Task {
+            // Dar 1.5s para que el usuario encuadre el producto
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+            // Si se detectó un barcode mientras esperábamos, handleBarcodeDetected ya se encarga
+            guard scanState == .scanning else { return }
+
+            await MainActor.run { withAnimation { scanState = .analyzing } }
+
+            // 🔑 Await la captura asíncrona. Esto resuelve la race condition donde
+            // analyzeWithAI() leía capturedImage antes de que el delegate de AVFoundation
+            // lo hubiera escrito.
+            let capturedImage = await cameraService.capturePhotoAsync()
+
+            await analyzeWithAIAsync(image: capturedImage, barcode: nil)
         }
     }
 
@@ -296,6 +306,7 @@ struct ScanView: View {
     private func handleBarcodeDetected(_ barcode: String) {
         withAnimation { scanState = .analyzing }
 
+        // 1. ¿El producto ya existe en el inventario local?
         if let existingProduct = inventoryViewModel.findProduct(byBarcode: barcode) {
             let result = ScannedProductResult(
                 name: existingProduct.name,
@@ -314,15 +325,50 @@ struct ScanView: View {
                 }
                 HapticManager.notification(.success)
             }
-        } else {
-            analyzeWithAI(barcode: barcode)
+            return
+        }
+
+        // 2. Producto no local. Flujo: (a) intentar OpenFoodFacts con el barcode,
+        //    (b) si no hay datos, capturar foto y mandar a Claude con el barcode.
+        Task {
+            let offRepo: OpenFoodFactsRepositoryProtocol = OpenFoodFactsRepository()
+            // `try?` aplana el doble optional: el resultado es OpenFoodFactsProduct?
+            if let off = try? await offRepo.lookup(barcode: barcode) {
+                let result = ScannedProductResult(
+                    name: off.name.isEmpty ? "Producto \(barcode)" : off.name,
+                    brand: off.brand,
+                    category: .other,
+                    barcode: barcode,
+                    suggestedPrice: 0,
+                    confidence: 85.0,
+                    isDuplicate: false,
+                    similarProducts: []
+                )
+                await MainActor.run {
+                    withAnimation {
+                        detectedResult = result
+                        scanState = .complete
+                    }
+                    HapticManager.notification(.success)
+                }
+                return
+            }
+
+            // OFF no tiene el producto → capturar foto y mandar a Claude con el barcode como hint
+            let capturedImage = await cameraService.capturePhotoAsync()
+            await analyzeWithAIAsync(image: capturedImage, barcode: barcode)
         }
     }
 
     private func analyzeWithAI(barcode: String? = nil) {
-    Task {
-        
-            let image = cameraService.capturedImage
+        Task {
+            // Si ya había una foto capturada previa, usarla; sino capturar ahora
+            let image: UIImage?
+            if let existing = cameraService.capturedImage {
+                image = existing
+            } else {
+                image = await cameraService.capturePhotoAsync()
+            }
             await analyzeWithAIAsync(image: image, barcode: barcode)
         }
     }

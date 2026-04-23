@@ -195,7 +195,8 @@ struct RestockView: View {
 
                 // Quick restock button
                 Button(action: {
-                    let qty = Int(restockQuantities[product.id] ?? "0") ?? (product.minStock - product.quantity)
+                    let defaultQty = max(product.minStock - product.quantity, 0)
+                    let qty = Int(restockQuantities[product.id] ?? "\(defaultQty)") ?? defaultQty
                     if qty > 0 {
                         inventoryViewModel.restockProduct(productId: product.id, quantity: qty)
                         restockQuantities.removeValue(forKey: product.id)
@@ -260,8 +261,11 @@ struct RestockView: View {
     }
 
     private func generatePurchaseList() {
-        purchaseListItems = inventoryViewModel.restockNeeded.map { product in
-            let qty = Int(restockQuantities[product.id] ?? "0") ?? max(product.minStock - product.quantity, 0)
+        purchaseListItems = inventoryViewModel.restockNeeded.compactMap { product in
+            let defaultQty = max(product.minStock - product.quantity, 0)
+            let qty = Int(restockQuantities[product.id] ?? "\(defaultQty)") ?? defaultQty
+            // Saltar productos con 0 unidades a comprar o sin precio de costo
+            guard qty > 0, product.costPrice > 0 else { return nil }
             return PurchaseListItem(
                 id: product.id,
                 product: product,

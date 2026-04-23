@@ -7,6 +7,19 @@ struct AnalyticsView: View {
     @Environment(\.colorScheme) var colorScheme
 
     @State private var showExportSheet = false
+    @State private var selectedExportFormat: ExportFormat = .csv
+
+    enum ExportFormat: String {
+        case pdf = "PDF"
+        case csv = "EXCEL_CSV"
+
+        var displayName: String {
+            switch self {
+            case .pdf: return "PDF"
+            case .csv: return "Excel (CSV)"
+            }
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -110,7 +123,8 @@ struct AnalyticsView: View {
             summaryCard(
                 title: "Ventas Totales",
                 value: analyticsViewModel.totalSales.compactCurrency,
-                trend: analyticsViewModel.salesTrend,
+                // Solo mostrar trend si hay al menos 2 puntos de datos reales
+                trend: analyticsViewModel.salesData.count >= 2 ? analyticsViewModel.salesTrend : nil,
                 icon: "dollarsign.circle.fill",
                 color: AppColors.success
             )
@@ -195,7 +209,15 @@ struct AnalyticsView: View {
                         y: .value("Ventas", point.sales)
                     )
                     .foregroundStyle(AppColors.primary)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
+                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                    .interpolationMethod(.catmullRom)
+
+                    PointMark(
+                        x: .value("Fecha", point.date, unit: .day),
+                        y: .value("Ventas", point.sales)
+                    )
+                    .foregroundStyle(AppColors.primary)
+                    .symbolSize(30)
 
                     AreaMark(
                         x: .value("Fecha", point.date, unit: .day),
@@ -203,11 +225,12 @@ struct AnalyticsView: View {
                     )
                     .foregroundStyle(
                         LinearGradient(
-                            colors: [AppColors.primary.opacity(0.2), AppColors.primary.opacity(0.02)],
+                            colors: [AppColors.primary.opacity(0.25), AppColors.primary.opacity(0.02)],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
+                    .interpolationMethod(.catmullRom)
                 }
                 .chartYAxis {
                     AxisMarks(position: .leading) { value in
@@ -220,7 +243,8 @@ struct AnalyticsView: View {
                     }
                 }
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 5)) { value in
+                    // Ajustar densidad de ticks según cantidad de datos (evita duplicados "21 abr, 21 abr")
+                    AxisMarks(values: .automatic(desiredCount: min(6, max(2, analyticsViewModel.salesData.count)))) { value in
                         AxisValueLabel {
                             if let date = value.as(Date.self) {
                                 Text(date.dayMonth)
@@ -254,14 +278,33 @@ struct AnalyticsView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 200)
             } else {
-                Chart(analyticsViewModel.stockLevelData) { item in
-                    BarMark(
-                        x: .value("Categoría", item.category),
-                        y: .value("Unidades", item.inStock)
-                    )
-                    .foregroundStyle(AppColors.success.gradient)
-                    .cornerRadius(4)
+                Chart {
+                    ForEach(analyticsViewModel.stockLevelData) { item in
+                        BarMark(
+                            x: .value("Categoría", item.category),
+                            y: .value("En Stock", item.inStock)
+                        )
+                        .foregroundStyle(by: .value("Estado", "En Stock"))
+
+                        BarMark(
+                            x: .value("Categoría", item.category),
+                            y: .value("Stock Bajo", item.lowStock)
+                        )
+                        .foregroundStyle(by: .value("Estado", "Stock Bajo"))
+
+                        BarMark(
+                            x: .value("Categoría", item.category),
+                            y: .value("Agotado", item.outOfStock)
+                        )
+                        .foregroundStyle(by: .value("Estado", "Agotado"))
+                    }
                 }
+                .chartForegroundStyleScale([
+                    "En Stock": AppColors.success,
+                    "Stock Bajo": AppColors.warning,
+                    "Agotado": AppColors.error
+                ])
+                .chartLegend(position: .bottom, alignment: .center, spacing: 8)
                 .chartYAxis {
                     AxisMarks(position: .trailing) { value in
                         AxisGridLine()
@@ -277,13 +320,27 @@ struct AnalyticsView: View {
                     AxisMarks { value in
                         AxisValueLabel {
                             if let label = value.as(String.self) {
-                                Text(label.prefix(1).uppercased() + label.dropFirst())
+                                Text(label.prefix(7) + (label.count > 7 ? "…" : ""))
                                     .font(.system(size: 9))
+                                    .rotationEffect(.degrees(-25))
                             }
                         }
                     }
                 }
-                .frame(height: 200)
+                .frame(height: 240)
+
+                // Si no hay productos en stock bajo o agotado, mostrar una nota positiva
+                let hasLowOrOut = analyticsViewModel.stockLevelData.contains { $0.lowStock > 0 || $0.outOfStock > 0 }
+                if !hasLowOrOut && !analyticsViewModel.stockLevelData.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(AppColors.success)
+                        Text("Todos los productos están en stock")
+                            .font(AppTypography.caption2Font)
+                            .foregroundColor(AppColors.textSecondary)
+                    }
+                    .padding(.top, 4)
+                }
             }
         }
         .padding(16)
@@ -308,6 +365,13 @@ struct AnalyticsView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 200)
             } else {
+                // Construir mapeo categoría → color (misma fuente para chart y leyenda)
+                // uniquingKeysWith evita crashes si el backend devuelve categorías duplicadas
+                let colorMap = Dictionary(
+                    analyticsViewModel.categoryDistribution.map { ($0.category, categoryColor(for: $0.category)) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+
                 Chart(analyticsViewModel.categoryDistribution) { item in
                     SectorMark(
                         angle: .value("Cantidad", item.count),
@@ -316,15 +380,16 @@ struct AnalyticsView: View {
                     )
                     .foregroundStyle(by: .value("Categoría", item.category))
                 }
+                .chartForegroundStyleScale(domain: Array(colorMap.keys), range: Array(colorMap.values))
                 .frame(height: 200)
 
-                // Legend
+                // Legend usando los mismos colores
                 VStack(spacing: 8) {
                     ForEach(analyticsViewModel.categoryDistribution) { item in
                         HStack {
                             Circle()
-                                .fill(categoryColor(for: item.category))
-                                .frame(width: 8, height: 8)
+                                .fill(colorMap[item.category] ?? AppColors.primary)
+                                .frame(width: 10, height: 10)
 
                             Text(item.category)
                                 .font(AppTypography.captionFont)
@@ -355,7 +420,7 @@ struct AnalyticsView: View {
                             .foregroundColor(AppColors.success)
                         Text("Reporte Exportado")
                             .font(AppTypography.titleFont)
-                        Text("El reporte se ha descargado correctamente")
+                        Text("El reporte se ha generado correctamente")
                             .font(AppTypography.calloutFont)
                             .foregroundColor(AppColors.textSecondary)
                     }
@@ -368,7 +433,7 @@ struct AnalyticsView: View {
                         Text("Exportar Reporte")
                             .font(AppTypography.titleFont)
 
-                        Text("Genera un reporte con los datos del período seleccionado (\(analyticsViewModel.selectedTimeRange.label))")
+                        Text("Período: \(analyticsViewModel.selectedTimeRange.label)")
                             .font(AppTypography.calloutFont)
                             .foregroundColor(AppColors.textSecondary)
                             .multilineTextAlignment(.center)
@@ -376,22 +441,51 @@ struct AnalyticsView: View {
                     }
 
                     VStack(spacing: 12) {
-                        exportOption(icon: "doc.text", title: "PDF", description: "Reporte completo con gráficos")
-                        exportOption(icon: "tablecells", title: "Excel (CSV)", description: "Datos en formato de hoja de cálculo")
+                        exportOption(
+                            icon: "doc.text",
+                            title: "PDF",
+                            description: "Reporte completo con gráficos",
+                            isSelected: selectedExportFormat == .pdf,
+                            action: { selectedExportFormat = .pdf }
+                        )
+                        exportOption(
+                            icon: "tablecells",
+                            title: "Excel (CSV)",
+                            description: "Datos en formato de hoja de cálculo",
+                            isSelected: selectedExportFormat == .csv,
+                            action: { selectedExportFormat = .csv }
+                        )
                     }
                     .padding(.horizontal)
 
-                    Button(action: { analyticsViewModel.exportReport() }) {
+                    Button(action: {
+                        analyticsViewModel.exportReport(format: selectedExportFormat.rawValue)
+                    }) {
                         if analyticsViewModel.isExporting {
                             ProgressView()
                                 .tint(.white)
                         } else {
-                            Text("Exportar Reporte")
+                            Text("Exportar como \(selectedExportFormat.displayName)")
                         }
                     }
                     .buttonStyle(PrimaryButtonStyle())
                     .padding(.horizontal)
                     .disabled(analyticsViewModel.isExporting)
+
+                    if let err = analyticsViewModel.error {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(AppColors.error)
+                            Text(err)
+                                .font(AppTypography.captionFont)
+                                .foregroundColor(AppColors.error)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(AppColors.error.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal)
+                    }
                 }
 
                 Spacer()
@@ -408,31 +502,40 @@ struct AnalyticsView: View {
         .presentationDetents([.medium])
     }
 
-    private func exportOption(icon: String, title: String, description: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 22))
-                .foregroundColor(AppColors.primary)
-                .frame(width: 44, height: 44)
-                .background(AppColors.primary.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+    private func exportOption(icon: String, title: String, description: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 22))
+                    .foregroundColor(isSelected ? AppColors.primary : AppColors.textSecondary)
+                    .frame(width: 44, height: 44)
+                    .background((isSelected ? AppColors.primary : AppColors.textSecondary).opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(AppTypography.headlineFont)
-                Text(description)
-                    .font(AppTypography.caption2Font)
-                    .foregroundColor(AppColors.textSecondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(AppTypography.headlineFont)
+                        .foregroundColor(colorScheme == .dark ? AppColors.darkTextPrimary : AppColors.textPrimary)
+                    Text(description)
+                        .font(AppTypography.caption2Font)
+                        .foregroundColor(AppColors.textSecondary)
+                }
+
+                Spacer()
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22))
+                    .foregroundColor(isSelected ? AppColors.primary : AppColors.textTertiary)
             }
-
-            Spacer()
-
-            Image(systemName: "circle")
-                .foregroundColor(AppColors.textTertiary)
+            .padding(14)
+            .background(colorScheme == .dark ? AppColors.darkSurface : AppColors.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? AppColors.primary : Color.clear, lineWidth: 2)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-        .padding(14)
-        .background(colorScheme == .dark ? AppColors.darkSurface : AppColors.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .buttonStyle(.plain)
     }
 
     // MARK: - Helpers
@@ -447,16 +550,44 @@ struct AnalyticsView: View {
         }
     }
 
+    /// Paleta profesional con colores distintivos pero armónicos (inspirada en Tailwind/Material)
     private func categoryColor(for category: String) -> Color {
         switch category.lowercased() {
-        case "bebidas": return AppColors.secondary
-        case "lacteos", "lácteos": return AppColors.info
-        case "snacks": return AppColors.warning
-        case "limpieza": return AppColors.accent
-        case "granos": return .brown
-        case "cuidado personal", "higiene": return .pink
-        case "otros", "other": return AppColors.textSecondary
-        default: return AppColors.primary
+        case "bebidas", "beverages":
+            return Color(red: 0.29, green: 0.56, blue: 0.89)       // azul
+        case "lacteos", "lácteos", "dairy":
+            return Color(red: 0.45, green: 0.75, blue: 0.82)       // teal suave
+        case "snacks":
+            return Color(red: 0.94, green: 0.58, blue: 0.29)       // naranja cálido
+        case "limpieza", "cleaning":
+            return Color(red: 0.55, green: 0.40, blue: 0.78)       // púrpura
+        case "granos", "grains":
+            return Color(red: 0.72, green: 0.52, blue: 0.31)       // marrón cálido
+        case "cuidado personal", "higiene", "personalcare":
+            return Color(red: 0.85, green: 0.38, blue: 0.55)       // rosa intenso
+        case "frutas", "frutas y verduras", "fruits":
+            return Color(red: 0.39, green: 0.78, blue: 0.47)       // verde fresco
+        case "carnes", "meat":
+            return Color(red: 0.82, green: 0.36, blue: 0.36)       // rojo suave
+        case "panadería", "panaderia", "bakery":
+            return Color(red: 0.93, green: 0.78, blue: 0.29)       // dorado
+        case "congelados", "frozen":
+            return Color(red: 0.38, green: 0.68, blue: 0.85)       // azul hielo
+        case "condimentos", "condiments":
+            return Color(red: 0.85, green: 0.55, blue: 0.40)       // terracota
+        case "otros", "other":
+            return Color(red: 0.60, green: 0.60, blue: 0.67)       // gris neutro
+        default:
+            // Hash estable para categorías no mapeadas
+            let palette: [Color] = [
+                Color(red: 0.29, green: 0.56, blue: 0.89),
+                Color(red: 0.94, green: 0.58, blue: 0.29),
+                Color(red: 0.39, green: 0.78, blue: 0.47),
+                Color(red: 0.85, green: 0.38, blue: 0.55),
+                Color(red: 0.55, green: 0.40, blue: 0.78)
+            ]
+            let stableHash = category.lowercased().unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+            return palette[stableHash % palette.count]
         }
     }
 }
