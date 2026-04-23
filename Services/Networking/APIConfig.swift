@@ -25,6 +25,7 @@ enum APIEndpoint {
     // Auth
     case authRegister
     case authLogin
+    case authOAuthRegister
 
     // Products
     case products
@@ -101,6 +102,7 @@ enum APIEndpoint {
         switch self {
         case .authRegister: return "/auth/register"
         case .authLogin: return "/auth/login"
+        case .authOAuthRegister: return "/auth/oauth-register"
 
         case .products: return "/products"
         case .product(let id): return "/products/\(id)"
@@ -159,7 +161,8 @@ enum APIEndpoint {
 
     var method: HTTPMethod {
         switch self {
-        case .authRegister, .authLogin, .sales, .inventoryMovements, .inventoryAdjust,
+        case .authRegister, .authLogin, .authOAuthRegister,
+             .sales, .inventoryMovements, .inventoryAdjust,
              .alertsMarkAllRead, .productVariants, .productMerge,
              .purchaseLists, .purchaseListVerify,
              .cycleCountSessions, .cycleCountComplete,

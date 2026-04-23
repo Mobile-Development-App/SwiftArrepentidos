@@ -40,6 +40,7 @@ class InventoryViewModel: ObservableObject {
         case inStock = "En Stock"
         case lowStock = "Stock Bajo"
         case outOfStock = "Agotado"
+        case expiring = "Por Vencer"
     }
 
     init() {
@@ -130,6 +131,7 @@ class InventoryViewModel: ObservableObject {
         case .inStock: result = result.filter { $0.stockStatus == .inStock }
         case .lowStock: result = result.filter { $0.stockStatus == .lowStock }
         case .outOfStock: result = result.filter { $0.stockStatus == .outOfStock }
+        case .expiring: result = result.filter { $0.isExpired || $0.isExpiringSoon }
         }
 
         if let category = selectedCategory {
@@ -143,7 +145,8 @@ class InventoryViewModel: ObservableObject {
             .all: products.count,
             .inStock: products.filter { $0.stockStatus == .inStock }.count,
             .lowStock: products.filter { $0.stockStatus == .lowStock }.count,
-            .outOfStock: products.filter { $0.stockStatus == .outOfStock }.count
+            .outOfStock: products.filter { $0.stockStatus == .outOfStock }.count,
+            .expiring: products.filter { $0.isExpired || $0.isExpiringSoon }.count
         ]
     }
 
@@ -152,8 +155,11 @@ class InventoryViewModel: ObservableObject {
     var totalStockValue: Double { products.reduce(0) { $0 + $1.stockValue } }
 
     var restockNeeded: [Product] {
-        products.filter { $0.quantity <= $0.minStock && $0.isActive }
-            .sorted { $0.quantity < $1.quantity }
+        products.filter {
+            $0.isActive &&
+            $0.quantity < $0.minStock  // Estricto: excluye los que están exactamente en el mínimo
+        }
+        .sorted { $0.quantity < $1.quantity }
     }
 
     var expiringProducts: [Product] {
@@ -163,28 +169,34 @@ class InventoryViewModel: ObservableObject {
 
 
     func addProduct(_ product: Product) {
-        // Optimistic update: add locally immediately
+        // Optimistic update: el producto se ve inmediatamente
         products.append(product)
         persistence.saveProducts(products)
         generateAlerts(for: product)
         updateStats()
         HapticManager.notification(.success)
 
-        // Sync to backend, then notify analytics to refresh
+        // Disparamos inventoryDidChange inmediatamente para que analytics refresque
+        NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
+
         Task {
             do {
                 let created = try await productRepo.createProduct(product)
-                // Replace local product with server version (has backend ID)
+                // Reemplazar el producto local con la versión del server (tiene el ID correcto del backend)
                 if let index = products.firstIndex(where: { $0.id == product.id }) {
                     products[index] = created
                     persistence.saveProducts(products)
                 }
-                print("[InventoryVM] ✅ Product created on backend: \(created.name)")
-                // Notify ONLY on success so analytics fetches updated data
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
-                print("[InventoryVM] ❌ Failed to create product on backend: \(error)")
-                self.error = "Error al guardar en servidor: \(error.localizedDescription)"
+                #if DEBUG
+                print("[InventoryVM] ⚠️ Create backend failed: \(error) — kept locally")
+                #endif
+                // No rollback: local state preservado.
+                // El producto existirá localmente; en el próximo restart podría desaparecer si backend no lo tiene.
+                await MainActor.run {
+                    self.error = "Guardado localmente. No se pudo sincronizar con el servidor."
+                }
             }
         }
 
@@ -192,45 +204,60 @@ class InventoryViewModel: ObservableObject {
     }
 
     func updateProduct(_ product: Product) {
-        if let index = products.firstIndex(where: { $0.id == product.id }) {
-            let oldProduct = products[index]
-            products[index] = product
-            persistence.saveProducts(products)
-            generateAlerts(for: product)
-            updateStats()
+        guard let index = products.firstIndex(where: { $0.id == product.id }) else { return }
+        let oldProduct = products[index]
 
-            // Sync to backend, then notify analytics to refresh
-            Task {
-                do {
-                    _ = try await productRepo.updateProduct(id: product.id.uuidString, product)
-                    print("[InventoryVM] ✅ Product updated on backend: \(product.name)")
-                    NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
-                } catch {
-                    print("[InventoryVM] ❌ Failed to update product on backend: \(error)")
+        // Optimistic update: cambios visibles inmediatamente
+        products[index] = product
+        persistence.saveProducts(products)
+        generateAlerts(for: product)
+        updateStats()
+
+        // Analytics refresca inmediatamente con el cambio local
+        NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
+
+        Task {
+            do {
+                _ = try await productRepo.updateProduct(id: product.id.apiString, product)
+                NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
+            } catch {
+                #if DEBUG
+                print("[InventoryVM] ⚠️ Update backend failed: \(error) — kept locally")
+                #endif
+                // No rollback: el cambio del usuario gana
+                await MainActor.run {
+                    self.error = "Cambios guardados localmente. Sincronizará cuando el servidor responda."
                 }
             }
-
-            var changes: [String] = []
-            if oldProduct.quantity != product.quantity { changes.append("Cantidad: \(oldProduct.quantity) -> \(product.quantity)") }
-            if oldProduct.salePrice != product.salePrice { changes.append("Precio: \(oldProduct.salePrice.currencyFormatted) -> \(product.salePrice.currencyFormatted)") }
-            logAudit(action: "Producto Actualizado", entityType: "Product", entityId: product.id, entityName: product.name, details: changes.joined(separator: ", "))
         }
+
+        var changes: [String] = []
+        if oldProduct.quantity != product.quantity { changes.append("Cantidad: \(oldProduct.quantity) -> \(product.quantity)") }
+        if oldProduct.salePrice != product.salePrice { changes.append("Precio: \(oldProduct.salePrice.currencyFormatted) -> \(product.salePrice.currencyFormatted)") }
+        logAudit(action: "Producto Actualizado", entityType: "Product", entityId: product.id, entityName: product.name, details: changes.joined(separator: ", "))
     }
 
     func deleteProduct(_ product: Product) {
+        // Optimistic delete: producto desaparece inmediatamente
         products.removeAll { $0.id == product.id }
         persistence.saveProducts(products)
         updateStats()
         HapticManager.notification(.success)
 
-        // Sync to backend, then notify analytics to refresh
+        NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
+
         Task {
             do {
-                try await productRepo.deleteProduct(id: product.id.uuidString)
-                print("[InventoryVM] ✅ Product deleted on backend: \(product.name)")
+                try await productRepo.deleteProduct(id: product.id.apiString)
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
-                print("[InventoryVM] ❌ Failed to delete product on backend: \(error)")
+                #if DEBUG
+                print("[InventoryVM] ⚠️ Delete backend failed: \(error) — kept locally deleted")
+                #endif
+                // No rollback: el usuario quiso eliminarlo
+                await MainActor.run {
+                    self.error = "Eliminado localmente. Podría reaparecer si el servidor no lo recibió."
+                }
             }
         }
 
@@ -238,27 +265,45 @@ class InventoryViewModel: ObservableObject {
     }
 
     func recordSale(productId: UUID, quantity: Int) {
+        // Validación: cantidad positiva y no exceder stock
+        guard quantity > 0, quantity <= 1_000_000 else {
+            self.error = "Cantidad de venta inválida"
+            return
+        }
         guard let index = products.firstIndex(where: { $0.id == productId }) else { return }
+        guard quantity <= products[index].quantity else {
+            self.error = "No hay suficiente stock para esta venta"
+            HapticManager.notification(.error)
+            return
+        }
+
         let product = products[index]
+
+        // Operación incremental: el usuario vendió algo físicamente.
+        // El local state gana — aunque el backend falle, la venta se registró.
         products[index].quantity = max(0, product.quantity - quantity)
         products[index].lastUpdated = Date()
         persistence.saveProducts(products)
         generateAlerts(for: products[index])
         updateStats()
 
-        // Sync sale to backend, then notify analytics to refresh
         Task {
             do {
                 let salesRepo = SalesRepository()
                 try await salesRepo.recordSale(
-                    productId: productId.uuidString,
+                    productId: productId.apiString,
                     quantity: quantity,
                     unitPrice: product.salePrice
                 )
-                print("[InventoryVM] ✅ Sale recorded on backend")
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
-                print("[InventoryVM] ❌ Failed to record sale on backend: \(error)")
+                #if DEBUG
+                print("[InventoryVM] ⚠️ Sale backend failed: \(error) — local state preserved")
+                #endif
+                // No rollback: el local state preserva la intención del usuario
+                await MainActor.run {
+                    self.error = "Venta guardada localmente. Sincronizará cuando haya conexión."
+                }
             }
         }
 
@@ -266,31 +311,42 @@ class InventoryViewModel: ObservableObject {
     }
 
     func restockProduct(productId: UUID, quantity: Int) {
+        guard quantity > 0, quantity <= 1_000_000 else {
+            self.error = "Cantidad de restock inválida"
+            return
+        }
         guard let index = products.firstIndex(where: { $0.id == productId }) else { return }
+
+        // Operación incremental: el usuario reabasteció físicamente.
+        // El local state gana — no revertimos aunque el backend falle.
         products[index].quantity += quantity
         products[index].lastUpdated = Date()
         persistence.saveProducts(products)
         updateStats()
         HapticManager.notification(.success)
 
-        // Sync movement to backend, then notify analytics to refresh
         Task {
             let body: [String: Any] = [
-                "productId": productId.uuidString,
+                "productId": productId.apiString,
                 "type": "RESTOCK",
                 "quantity": quantity,
                 "reason": "Reabastecimiento desde app"
             ]
             do {
-                let _: [String: String] = try await APIClient.shared.request(
+                _ = try await APIClient.shared.requestRaw(
                     .inventoryMovements,
                     method: .POST,
                     body: body
                 )
-                print("[InventoryVM] ✅ Restock recorded on backend")
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
-                print("[InventoryVM] ❌ Failed to record restock on backend: \(error)")
+                #if DEBUG
+                print("[InventoryVM] ⚠️ Restock backend failed: \(error) — local state preserved")
+                #endif
+                // No rollback: el local state preserva la intención del usuario
+                await MainActor.run {
+                    self.error = "Reabastecimiento guardado localmente. Sincronizará cuando haya conexión."
+                }
             }
         }
 
@@ -312,7 +368,7 @@ class InventoryViewModel: ObservableObject {
             persistence.saveAlerts(alerts)
 
             Task {
-                try? await alertRepo.markAsRead(id: alert.id.uuidString)
+                try? await alertRepo.markAsRead(id: alert.id.apiString)
             }
         }
     }

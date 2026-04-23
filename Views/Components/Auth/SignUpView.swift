@@ -48,10 +48,16 @@ struct SignUpView: View {
                             HStack {
                                 Image(systemName: "lock")
                                     .foregroundColor(AppColors.textTertiary)
-                                if showPassword {
-                                    TextField("Mínimo 8 caracteres", text: $authViewModel.signUpPassword)
-                                } else {
-                                    SecureField("Mínimo 8 caracteres", text: $authViewModel.signUpPassword)
+                                Group {
+                                    if showPassword {
+                                        TextField("8-128 caracteres", text: $authViewModel.signUpPassword)
+                                            .textContentType(.oneTimeCode)
+                                            .autocorrectionDisabled()
+                                            .textInputAutocapitalization(.never)
+                                    } else {
+                                        SecureField("8-128 caracteres", text: $authViewModel.signUpPassword)
+                                            .textContentType(.newPassword)
+                                    }
                                 }
                                 Button(action: { showPassword.toggle() }) {
                                     Image(systemName: showPassword ? "eye.slash" : "eye")
@@ -63,7 +69,7 @@ struct SignUpView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
 
                             if !authViewModel.signUpPassword.isEmpty && !authViewModel.passwordLengthValid {
-                                Text("La contraseña debe tener al menos 8 caracteres")
+                                Text("8-128 caracteres, sin espacios ni emojis")
                                     .font(AppTypography.caption2Font)
                                     .foregroundColor(AppColors.error)
                             }

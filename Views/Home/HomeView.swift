@@ -8,6 +8,7 @@ struct HomeView: View {
     @State private var showNotifications = false
     @State private var showAddProduct = false
     @State private var showSettings = false
+    @State private var showScanFromHome = false
 
     @Environment(\.colorScheme) var colorScheme
 
@@ -62,6 +63,7 @@ struct HomeView: View {
             .sheet(isPresented: $showNotifications) { NotificationsView() }
             .sheet(isPresented: $showAddProduct) { AddProductView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .fullScreenCover(isPresented: $showScanFromHome) { ScanView() }
         }
     }
 
@@ -88,10 +90,11 @@ struct HomeView: View {
 
     private var statsGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-            StatCardView(title: "Total Productos", value: "\(inventoryViewModel.dashboardStats.totalProducts)", icon: "shippingbox.fill", iconColor: AppColors.deepSpaceBlue, trend: 5.2)
+            // Sin trends hardcoded — solo se muestran si hay data real
+            StatCardView(title: "Total Productos", value: "\(inventoryViewModel.dashboardStats.totalProducts)", icon: "shippingbox.fill", iconColor: AppColors.deepSpaceBlue)
             StatCardView(title: "Stock Bajo", value: "\(inventoryViewModel.dashboardStats.lowStockCount)", icon: "exclamationmark.triangle.fill", iconColor: AppColors.warning)
             StatCardView(title: "Agotados", value: "\(inventoryViewModel.dashboardStats.outOfStockCount)", icon: "xmark.circle.fill", iconColor: AppColors.error)
-            StatCardView(title: "Valor en Stock", value: inventoryViewModel.dashboardStats.totalStockValue.compactCurrency, icon: "dollarsign.circle.fill", iconColor: AppColors.success, trend: 12.5)
+            StatCardView(title: "Valor en Stock", value: inventoryViewModel.dashboardStats.totalStockValue.compactCurrency, icon: "dollarsign.circle.fill", iconColor: AppColors.success)
         }
     }
 
@@ -185,8 +188,12 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Acciones Rapidas").font(AppTypography.headlineFont)
             HStack(spacing: 12) {
-                quickActionButton(icon: "camera.viewfinder", title: "Escanear con IA", color: AppColors.deepSpaceBlue) {}
-                quickActionButton(icon: "plus.circle.fill", title: "Agregar Producto", color: AppColors.teaGreen) { showAddProduct = true }
+                quickActionButton(icon: "camera.viewfinder", title: "Escanear con IA", color: AppColors.deepSpaceBlue) {
+                    showScanFromHome = true
+                }
+                quickActionButton(icon: "plus.circle.fill", title: "Agregar Producto", color: AppColors.teaGreen) {
+                    showAddProduct = true
+                }
             }
         }
     }

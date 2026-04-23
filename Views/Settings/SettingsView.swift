@@ -5,7 +5,6 @@ struct SettingsView: View {
     @EnvironmentObject var authViewModel: AuthViewModel
     @Environment(\.colorScheme) var colorScheme
 
-    @State private var showLanguage = false
     @State private var showSecurity = false
     @State private var showStoreManagement = false
     @State private var showTeamMembers = false
@@ -32,9 +31,7 @@ struct SettingsView: View {
                             color: AppColors.warning
                         )
 
-                        settingsNavRow(icon: "globe", title: "Idioma", value: settingsViewModel.languageName, color: AppColors.info) {
-                            showLanguage = true
-                        }
+                        disabledSettingRow(icon: "globe", title: "Idioma", value: "Español (próximamente)", color: AppColors.info)
                     }
 
                     settingsSection(title: "Cuenta") {
@@ -56,8 +53,7 @@ struct SettingsView: View {
                             showHelpCenter = true
                         }
 
-                        settingsNavRow(icon: "doc.text.fill", title: "Términos y Condiciones", color: AppColors.textSecondary) {
-                        }
+                        disabledSettingRow(icon: "doc.text.fill", title: "Términos y Condiciones", value: "Próximamente", color: AppColors.textSecondary)
                     }
 
                     Button(action: {
@@ -86,9 +82,6 @@ struct SettingsView: View {
             .background(colorScheme == .dark ? AppColors.darkBackground : AppColors.background)
             .navigationTitle("Ajustes")
             .navigationBarTitleDisplayMode(.large)
-            .sheet(isPresented: $showLanguage) {
-                LanguageSettingsView()
-            }
             .sheet(isPresented: $showSecurity) {
                 SecurityView()
             }
@@ -214,5 +207,28 @@ struct SettingsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
+    }
+
+    private func disabledSettingRow(icon: String, title: String, value: String, color: Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundColor(color.opacity(0.5))
+                .frame(width: 32, height: 32)
+                .background(color.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Text(title)
+                .font(AppTypography.bodyFont)
+                .foregroundColor(AppColors.textSecondary)
+
+            Spacer()
+
+            Text(value)
+                .font(AppTypography.captionFont)
+                .foregroundColor(AppColors.textTertiary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 }
