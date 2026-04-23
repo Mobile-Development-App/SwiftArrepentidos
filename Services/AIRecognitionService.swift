@@ -13,7 +13,7 @@ class AIRecognitionService: ObservableObject {
     @Published var lastResult: AIProductResult?
     @Published var error: String?
 
-    /// set this to the openai key
+    /// set this to the openai key - lo edjamos asi no money :(
     /// Without it, the service uses free on-device Apple Vision only.
     var openAIApiKey: String? = nil
 
@@ -41,7 +41,13 @@ class AIRecognitionService: ObservableObject {
         result.detectedTexts = texts
 
         result = classifyFromText(result: result, texts: texts)
-        result.confidence = 65.0  
+
+        //si no detectamos nada, confianza 0
+        if result.name.isEmpty && result.brand.isEmpty && (result.barcode?.isEmpty ?? true) {
+            result.confidence = 0
+        } else {
+            result.confidence = 65.0
+        }
         result.source = .onDevice
 
         await MainActor.run {
@@ -52,7 +58,10 @@ class AIRecognitionService: ObservableObject {
         return result
     }
 
-    // openai version (Paid per token)
+  
+    guard let apiKey = openAIApiKey, !apiKey.isEmpty else {
+        return await analyzeWithVision(image: image, barcode: barcode)  // fallback gratis
+    }
 
     func analyzeWithOpenAI(image: UIImage, barcode: String? = nil) async -> AIProductResult {
         guard let apiKey = openAIApiKey, !apiKey.isEmpty else {

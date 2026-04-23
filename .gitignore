@@ -31,5 +31,13 @@ Carthage/Checkouts/
 # fastlane
 fastlane/report.xml
 fastlane/Preview.html
-fastlane/screenshots/**/*.png
+fastlane/screenshots/*/.png
 fastlane/test_output
+
+# Secrets & API Keys 
+Services/Secrets.swift
+GoogleService-Info.plist
+GoogleService-Info*.plist
+*.env
+.env*
+secrets.plist
