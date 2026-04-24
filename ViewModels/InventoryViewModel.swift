@@ -176,6 +176,20 @@ class InventoryViewModel: ObservableObject {
         updateStats()
         HapticManager.notification(.success)
 
+        // Sprint 3 BQ6: log the product creation for the peak-activity
+        // histogram. Fire-and-forget; the tracker is an actor and handles
+        // its own persistence off the main thread.
+        Task.detached(priority: .utility) {
+            await UsageTrackingService.shared.record(
+                kind: .productCreated,
+                attributes: [
+                    "productId": product.id.uuidString,
+                    "category": product.category.rawValue,
+                    "location": product.location
+                ]
+            )
+        }
+
         // Disparamos inventoryDidChange inmediatamente para que analytics refresque
         NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
 
