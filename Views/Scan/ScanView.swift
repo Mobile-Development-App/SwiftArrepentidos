@@ -291,10 +291,6 @@ struct ScanView: View {
             guard scanState == .scanning else { return }
 
             await MainActor.run { withAnimation { scanState = .analyzing } }
-
-            // 🔑 Await la captura asíncrona. Esto resuelve la race condition donde
-            // analyzeWithAI() leía capturedImage antes de que el delegate de AVFoundation
-            // lo hubiera escrito.
             let capturedImage = await cameraService.capturePhotoAsync()
 
             await analyzeWithAIAsync(image: capturedImage, barcode: nil)
@@ -324,6 +320,12 @@ struct ScanView: View {
                     scanState = .complete
                 }
                 HapticManager.notification(.success)
+                Task.detached(priority: .utility) {
+                    await AnalyticsLogService.shared.record(
+                        kind: .scanAttempt,
+                        attributes: ["source": "camera", "success": "1"]
+                    )
+                }
             }
             return
         }
@@ -350,11 +352,16 @@ struct ScanView: View {
                         scanState = .complete
                     }
                     HapticManager.notification(.success)
+                    Task.detached(priority: .utility) {
+                        await AnalyticsLogService.shared.record(
+                            kind: .scanAttempt,
+                            attributes: ["source": "camera", "success": "1"]
+                        )
+                    }
                 }
                 return
             }
 
-            // OFF no tiene el producto → capturar foto y mandar a Claude con el barcode como hint
             let capturedImage = await cameraService.capturePhotoAsync()
             await analyzeWithAIAsync(image: capturedImage, barcode: barcode)
         }
@@ -421,6 +428,15 @@ struct ScanView: View {
                 self.scanState = .complete
             }
             HapticManager.notification(hasData ? .success : .warning)
+            Task.detached(priority: .utility) {
+                await AnalyticsLogService.shared.record(
+                    kind: .scanAttempt,
+                    attributes: [
+                        "source": "camera",
+                        "success": hasData ? "1" : "0"
+                    ]
+                )
+            }
         }
     }
 
