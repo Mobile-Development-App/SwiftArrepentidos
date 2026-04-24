@@ -117,12 +117,150 @@ struct AddProductView: View {
         return true
     }
 
-    /// Validación rápida solo para habilitar/deshabilitar el botón
+    /// Validación rápida solo para habilitar/deshabilitar el botón.
+    /// Exige que haya contenido en los campos obligatorios y que ningún
+    /// validador por campo (sección MARK: Per-field validators) esté en
+    /// estado de error.
     var isFormValid: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty &&
         !sku.trimmingCharacters(in: .whitespaces).isEmpty &&
         !costPrice.isEmpty && !salePrice.isEmpty && !quantity.isEmpty &&
-        !isSaving
+        !isSaving &&
+        nameError == nil && skuError == nil && barcodeError == nil &&
+        supplierError == nil && locationError == nil &&
+        costPriceError == nil && salePriceError == nil &&
+        quantityError == nil && minStockError == nil &&
+        descriptionError == nil
+    }
+
+    // MARK: - Per-field validators (real-time feedback)
+    //
+    // Cada validador devuelve `String?`. `nil` significa "campo OK o aún no
+    // se ha escrito nada". La UI muestra el texto debajo del campo y pinta
+    // un borde rojo cuando el mensaje es distinto de nil. Se rechazan
+    // explícitamente emojis y símbolos raros en los campos de texto libre.
+
+    /// Caracteres aceptados en campos de texto libre (nombre, proveedor,
+    /// ubicación). Permite letras Unicode (incluye acentos, español), dígitos,
+    /// espacios y puntuación común. Emojis quedan fuera porque son categoría
+    /// Symbol-Other (So), no Letter.
+    private static let freeTextAllowed: CharacterSet = {
+        var set = CharacterSet.letters
+        set.formUnion(.decimalDigits)
+        set.formUnion(.whitespaces)
+        set.insert(charactersIn: ".,;:-_/()&'\"#%+°")
+        return set
+    }()
+
+    /// Caracteres aceptados en SKU: alfanuméricos + guión / underscore /
+    /// punto. Nada de espacios ni emojis.
+    private static let skuAllowed: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-_.")
+        return set
+    }()
+
+    private func containsDisallowed(_ s: String, allowed: CharacterSet) -> Bool {
+        s.unicodeScalars.contains { !allowed.contains($0) }
+    }
+
+    var nameError: String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        if trimmed.count > 100 { return "El nombre no puede exceder 100 caracteres." }
+        if containsDisallowed(name, allowed: Self.freeTextAllowed) {
+            return "El nombre no admite emojis ni símbolos especiales."
+        }
+        return nil
+    }
+
+    var skuError: String? {
+        let trimmed = sku.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        if trimmed.count > 50 { return "El SKU no puede exceder 50 caracteres." }
+        if containsDisallowed(trimmed, allowed: Self.skuAllowed) {
+            return "El SKU solo admite letras, números, guión (-), punto (.) y underscore (_)."
+        }
+        return nil
+    }
+
+    var barcodeError: String? {
+        let trimmed = barcode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        if trimmed.count > 32 { return "El código de barras no puede exceder 32 dígitos." }
+        if !trimmed.allSatisfy({ $0.isNumber }) {
+            return "El código de barras solo admite dígitos numéricos."
+        }
+        return nil
+    }
+
+    var supplierError: String? {
+        if supplier.isEmpty { return nil }
+        if supplier.count > 100 { return "El proveedor no puede exceder 100 caracteres." }
+        if containsDisallowed(supplier, allowed: Self.freeTextAllowed) {
+            return "El proveedor no admite emojis ni símbolos especiales."
+        }
+        return nil
+    }
+
+    var locationError: String? {
+        if location.isEmpty { return nil }
+        if location.count > 200 { return "La ubicación no puede exceder 200 caracteres." }
+        if containsDisallowed(location, allowed: Self.freeTextAllowed) {
+            return "La ubicación no admite emojis ni símbolos especiales."
+        }
+        return nil
+    }
+
+    var costPriceError: String? {
+        if costPrice.isEmpty { return nil }
+        guard let value = Double(costPrice), value.isFinite else {
+            return "Ingresa un número válido (ej: 1250 o 1250.50)."
+        }
+        if value <= 0 { return "El precio de costo debe ser mayor a 0." }
+        if value >= 100_000_000 { return "El precio excede el máximo permitido." }
+        return nil
+    }
+
+    var salePriceError: String? {
+        if salePrice.isEmpty { return nil }
+        guard let value = Double(salePrice), value.isFinite else {
+            return "Ingresa un número válido (ej: 1250 o 1250.50)."
+        }
+        if value < 0 { return "El precio de venta no puede ser negativo." }
+        if value >= 100_000_000 { return "El precio excede el máximo permitido." }
+        if let cost = Double(costPrice), cost > 0, value < cost {
+            return "El precio de venta no puede ser menor al costo."
+        }
+        return nil
+    }
+
+    var quantityError: String? {
+        if quantity.isEmpty { return nil }
+        if !quantity.allSatisfy({ $0.isNumber }) {
+            return "La cantidad solo admite números enteros (sin decimales, sin texto)."
+        }
+        guard let value = Int(quantity) else { return "Cantidad inválida." }
+        if value < 0 { return "La cantidad no puede ser negativa." }
+        if value > 1_000_000 { return "La cantidad excede el máximo (1,000,000)." }
+        return nil
+    }
+
+    var minStockError: String? {
+        if minStock.isEmpty { return nil }
+        if !minStock.allSatisfy({ $0.isNumber }) {
+            return "El stock mínimo solo admite números enteros."
+        }
+        guard let value = Int(minStock) else { return "Stock mínimo inválido." }
+        if value < 0 { return "El stock mínimo no puede ser negativo." }
+        if value > 1_000_000 { return "El stock mínimo excede el máximo permitido." }
+        return nil
+    }
+
+    var descriptionError: String? {
+        if description.isEmpty { return nil }
+        if description.count > 500 { return "La descripción no puede exceder 500 caracteres." }
+        return nil
     }
 
     var body: some View {
@@ -153,9 +291,19 @@ struct AddProductView: View {
                 // Basic Info
                 sectionView(title: "Información Básica", icon: "info.circle") {
                     VStack(spacing: 14) {
-                        formField(label: "Nombre del producto (1-100)", placeholder: "Ej: Leche Entera 1L", text: $name)
-                        formField(label: "SKU (1-50)", placeholder: "Ej: DAI-001", text: $sku)
-                        formField(label: "Código de barras (opcional, numérico)", placeholder: "Ej: 7701234567890", text: $barcode, keyboardType: .numberPad)
+                        formField(label: "Nombre del producto (1-100)",
+                                  placeholder: "Ej: Leche Entera 1L",
+                                  text: $name,
+                                  error: nameError)
+                        formField(label: "SKU (1-50)",
+                                  placeholder: "Ej: DAI-001",
+                                  text: $sku,
+                                  error: skuError)
+                        formField(label: "Código de barras (opcional, numérico)",
+                                  placeholder: "Ej: 7701234567890",
+                                  text: $barcode,
+                                  keyboardType: .numberPad,
+                                  error: barcodeError)
 
                         // Open Food Facts lookup
                         openFoodFactsLookupButton
@@ -185,16 +333,27 @@ struct AddProductView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
 
-                        formField(label: "Proveedor", placeholder: "Ej: Lácteos Alpina", text: $supplier)
+                        formField(label: "Proveedor",
+                                  placeholder: "Ej: Lácteos Alpina",
+                                  text: $supplier,
+                                  error: supplierError)
                     }
                 }
 
                 // Pricing
                 sectionView(title: "Precios", icon: "dollarsign.circle") {
                     VStack(spacing: 14) {
-                        HStack(spacing: 12) {
-                            formField(label: "Precio de costo", placeholder: "0", text: $costPrice, keyboardType: .decimalPad)
-                            formField(label: "Precio de venta", placeholder: "0", text: $salePrice, keyboardType: .decimalPad)
+                        HStack(alignment: .top, spacing: 12) {
+                            formField(label: "Precio de costo",
+                                      placeholder: "0",
+                                      text: $costPrice,
+                                      keyboardType: .decimalPad,
+                                      error: costPriceError)
+                            formField(label: "Precio de venta",
+                                      placeholder: "0",
+                                      text: $salePrice,
+                                      keyboardType: .decimalPad,
+                                      error: salePriceError)
                         }
 
                         // Live margin calculator
@@ -218,12 +377,23 @@ struct AddProductView: View {
                 // Inventory
                 sectionView(title: "Inventario", icon: "cube") {
                     VStack(spacing: 14) {
-                        HStack(spacing: 12) {
-                            formField(label: "Cantidad (entero)", placeholder: "0", text: $quantity, keyboardType: .numberPad)
-                            formField(label: "Stock mínimo (entero)", placeholder: "0", text: $minStock, keyboardType: .numberPad)
+                        HStack(alignment: .top, spacing: 12) {
+                            formField(label: "Cantidad (entero)",
+                                      placeholder: "0",
+                                      text: $quantity,
+                                      keyboardType: .numberPad,
+                                      error: quantityError)
+                            formField(label: "Stock mínimo (entero)",
+                                      placeholder: "0",
+                                      text: $minStock,
+                                      keyboardType: .numberPad,
+                                      error: minStockError)
                         }
 
-                        formField(label: "Ubicación", placeholder: "Ej: Pasillo 3, Estante A", text: $location)
+                        formField(label: "Ubicación",
+                                  placeholder: "Ej: Pasillo 3, Estante A",
+                                  text: $location,
+                                  error: locationError)
 
                         // Expiration toggle
                         Toggle(isOn: $hasExpiration) {
@@ -246,12 +416,33 @@ struct AddProductView: View {
 
                 // Description
                 sectionView(title: "Descripción (opcional, máx 500)", icon: "text.alignleft") {
-                    TextEditor(text: $description)
-                        .font(AppTypography.bodyFont)
-                        .frame(minHeight: 80)
-                        .padding(10)
-                        .background(colorScheme == .dark ? AppColors.darkSurfaceSecondary : AppColors.surfaceSecondary)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextEditor(text: $description)
+                            .font(AppTypography.bodyFont)
+                            .frame(minHeight: 80)
+                            .padding(10)
+                            .background(colorScheme == .dark ? AppColors.darkSurfaceSecondary : AppColors.surfaceSecondary)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(descriptionError != nil ? AppColors.error : Color.clear, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        if let descriptionError {
+                            HStack(alignment: .top, spacing: 4) {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(AppColors.error)
+                                Text(descriptionError)
+                                    .font(AppTypography.caption2Font)
+                                    .foregroundColor(AppColors.error)
+                                Spacer(minLength: 0)
+                            }
+                        } else if !description.isEmpty {
+                            Text("\(description.count) / 500")
+                                .font(AppTypography.caption2Font)
+                                .foregroundColor(AppColors.textTertiary)
+                        }
+                    }
                 }
 
                 // Validation error
@@ -444,7 +635,11 @@ struct AddProductView: View {
     }
 
     @ViewBuilder
-    private func formField(label: String, placeholder: String, text: Binding<String>, keyboardType: UIKeyboardType = .default) -> some View {
+    private func formField(label: String,
+                           placeholder: String,
+                           text: Binding<String>,
+                           keyboardType: UIKeyboardType = .default,
+                           error: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
                 .font(AppTypography.captionFont)
@@ -456,7 +651,24 @@ struct AddProductView: View {
                 .autocorrectionDisabled()
                 .padding(14)
                 .background(colorScheme == .dark ? AppColors.darkSurfaceSecondary : AppColors.surfaceSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(error != nil ? AppColors.error : Color.clear, lineWidth: 1)
+                )
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            if let error {
+                HStack(alignment: .top, spacing: 4) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(AppColors.error)
+                    Text(error)
+                        .font(AppTypography.caption2Font)
+                        .foregroundColor(AppColors.error)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 4)
+            }
         }
     }
 
