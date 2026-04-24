@@ -65,6 +65,12 @@ struct AnalyticsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 12) {
+                        NavigationLink {
+                            BusinessQuestionsView()
+                        } label: {
+                            Image(systemName: "questionmark.circle")
+                                .foregroundColor(AppColors.primary)
+                        }
                         Button(action: {
                             analyticsViewModel.loadData(for: analyticsViewModel.selectedTimeRange)
                         }) {
