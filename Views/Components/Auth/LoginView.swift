@@ -53,7 +53,15 @@ struct LoginView: View {
                             }
                             .padding(14)
                             .background(colorScheme == .dark ? AppColors.darkSurfaceSecondary : AppColors.surfaceSecondary)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(authViewModel.loginEmailError != nil ? AppColors.error : Color.clear, lineWidth: 1)
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                            if let emailError = authViewModel.loginEmailError {
+                                fieldErrorLabel(emailError)
+                            }
                         }
 
                         // Password
@@ -85,7 +93,15 @@ struct LoginView: View {
                             }
                             .padding(14)
                             .background(colorScheme == .dark ? AppColors.darkSurfaceSecondary : AppColors.surfaceSecondary)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(authViewModel.loginPasswordError != nil ? AppColors.error : Color.clear, lineWidth: 1)
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                            if let passwordError = authViewModel.loginPasswordError {
+                                fieldErrorLabel(passwordError)
+                            }
                         }
 
                         // Forgot password
@@ -180,6 +196,20 @@ struct LoginView: View {
                 ForgotPasswordView()
             }
         }
+    }
+
+    /// Etiqueta de error inline para validaciones por campo.
+    private func fieldErrorLabel(_ text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 11))
+                .foregroundColor(AppColors.error)
+            Text(text)
+                .font(AppTypography.caption2Font)
+                .foregroundColor(AppColors.error)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 4)
     }
 
     /// Botón reutilizable para login con proveedores OAuth

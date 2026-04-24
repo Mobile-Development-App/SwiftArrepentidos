@@ -96,6 +96,34 @@ class AuthViewModel: ObservableObject {
         isValidEmail(loginEmail) && !loginPassword.isEmpty && loginPassword.count <= 128
     }
 
+    /// Error inline para el campo de email en login. Devuelve `nil` cuando
+    /// el campo está vacío (no molestamos al usuario antes de que escriba).
+    var loginEmailError: String? {
+        let trimmed = loginEmail.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return nil }
+        if trimmed.count > 254 {
+            return "El correo es demasiado largo."
+        }
+        if !isValidEmail(loginEmail) {
+            return "Ingresa un correo válido (ejemplo: tu@correo.com)."
+        }
+        return nil
+    }
+
+    /// Error inline para el campo de contraseña en login.
+    /// No revelamos reglas de complejidad (solo longitud) para no filtrar
+    /// información sobre qué contraseña aceptamos.
+    var loginPasswordError: String? {
+        if loginPassword.isEmpty { return nil }
+        if loginPassword.count > 128 {
+            return "La contraseña excede el límite de 128 caracteres."
+        }
+        if loginPassword.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
+            return "La contraseña no puede contener espacios."
+        }
+        return nil
+    }
+
     var isSignUpValid: Bool {
         isValidName(signUpName) &&
         isValidEmail(signUpEmail) &&
