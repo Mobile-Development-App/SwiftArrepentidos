@@ -736,6 +736,15 @@ struct AddProductView: View {
             inventoryViewModel.updateProduct(product)
         } else {
             inventoryViewModel.addProduct(product)
+            // BQ7
+            if fromScan == nil {
+                Task.detached(priority: .utility) {
+                    await AnalyticsLogService.shared.record(
+                        kind: .scanAttempt,
+                        attributes: ["source": "manual", "success": "1"]
+                    )
+                }
+            }
         }
 
         withAnimation {

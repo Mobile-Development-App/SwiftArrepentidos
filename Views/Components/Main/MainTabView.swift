@@ -42,13 +42,20 @@ struct MainTabView: View {
             customTabBar
         }
         .onChange(of: selectedTab) { _, newValue in
+            // BQ5
+            Task.detached(priority: .utility) {
+                await AnalyticsLogService.shared.record(
+                    kind: .screenViewed,
+                    attributes: ["screen": newValue.rawValue]
+                )
+            }
             if newValue == .scan {
                 showScanSheet = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     selectedTab = .home
                 }
             }
-        }
+        }}
         .fullScreenCover(isPresented: $showScanSheet) {
             ScanView()
         }

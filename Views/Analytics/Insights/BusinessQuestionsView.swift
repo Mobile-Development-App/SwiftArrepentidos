@@ -54,14 +54,8 @@ struct BusinessQuestionsView: View {
         .refreshable { await refresh() }
         .task { await refresh() }
         .onChange(of: network.isConnected) { _, isConnected in
-            // When we transition online, re-run so the valuation picks up
-            // anything the inventory sync pulled in.
             guard isConnected else { return }
-            Task { await sprint3VM.refresh()
-                await AnalyticsLogService.shared.record(
-                kind: .featureAccessed,
-                attributes: ["feature": "business_questions_screen"]
-            ) }
+            Task { await refresh() }
         }
     }
 
@@ -69,6 +63,12 @@ struct BusinessQuestionsView: View {
         await viewModel.refresh(
             stores: storeViewModel.stores,
             products: inventoryViewModel.products
+        )
+        await sprint3VM.refresh()
+        // BQ8
+        await AnalyticsLogService.shared.record(
+            kind: .featureAccessed,
+            attributes: ["feature": "business_questions_screen"]
         )
     }
 
