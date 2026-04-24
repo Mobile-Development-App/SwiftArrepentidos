@@ -23,13 +23,22 @@ struct InventarIAApp: App {
     @StateObject private var analyticsViewModel = AnalyticsViewModel()
 
     init() {
-        // Firebase ya se configuró en AppDelegate.application(_:didFinishLaunchingWithOptions:)
-
-        // Start network monitoring
         _ = NetworkMonitor.shared
 
-        // Clear any old mock data on first run after update
         PersistenceService.shared.clearMockDataIfNeeded()
+
+        // offline nunca se replayean al volver la conexión
+        OfflineQueueService.bootstrap(replayHandlers: .init(
+            createProduct: { product in
+                try await ProductRepository().createProduct(product)
+            },
+            updateProduct: { id, product in
+                try await ProductRepository().updateProduct(id: id.uuidString, product)
+            },
+            deleteProduct: { id in
+                try await ProductRepository().deleteProduct(id: id.uuidString)
+            }
+        ))
     }
 
     var body: some Scene {
