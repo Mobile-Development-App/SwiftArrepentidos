@@ -60,15 +60,16 @@ final class ProductRepository: ProductRepositoryProtocol {
             throw APIError.offline
         }
 
+        let token = await PipelineLogger.shared.start(.ingestion)
         let dto: ProductDTO = try await apiClient.request(
             .products,
             method: .POST,
             body: product.toCreateRequest()
         )
+        await PipelineLogger.shared.end(token)
 
         let created = dto.toDomain()
 
-        // Update cache
         var products = cache.loadProducts()
         products.append(created)
         cache.saveProducts(products)
@@ -81,15 +82,16 @@ final class ProductRepository: ProductRepositoryProtocol {
             throw APIError.offline
         }
 
+        let token = await PipelineLogger.shared.start(.ingestion)
         let dto: ProductDTO = try await apiClient.request(
             .product(id: id),
             method: .PATCH,
             body: product.toUpdateRequest()
         )
+        await PipelineLogger.shared.end(token)
 
         let updated = dto.toDomain()
 
-        // Update cache
         var products = cache.loadProducts()
         if let index = products.firstIndex(where: { $0.id == updated.id }) {
             products[index] = updated
