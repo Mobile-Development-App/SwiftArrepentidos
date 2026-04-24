@@ -176,9 +176,6 @@ class InventoryViewModel: ObservableObject {
         updateStats()
         HapticManager.notification(.success)
 
-        // Sprint 3 BQ6: log the product creation for the peak-activity
-        // histogram. Fire-and-forget; the tracker is an actor and handles
-        // its own persistence off the main thread.
         Task.detached(priority: .utility) {
             await UsageTrackingService.shared.record(
                 kind: .productCreated,
@@ -194,9 +191,19 @@ class InventoryViewModel: ObservableObject {
         NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
 
         Task {
+            if await !ConnectivityService.shared.isOnline {
+                //offline path: encolar y asumir éxito local.
+                //cuando vuelva la conexión offlineQueueService ejecutará el createProduct real.
+                await OfflineQueueService.shared.enqueue(
+                    .createProduct(clientId: UUID(), product: product, enqueuedAt: Date())
+                )
+                return
+            }
             do {
+                let token = await PipelineLogger.shared.start(.storage)
                 let created = try await productRepo.createProduct(product)
-                // Reemplazar el producto local con la versión del server (tiene el ID correcto del backend)
+                await PipelineLogger.shared.end(token)
+
                 if let index = products.firstIndex(where: { $0.id == product.id }) {
                     products[index] = created
                     persistence.saveProducts(products)
@@ -204,13 +211,11 @@ class InventoryViewModel: ObservableObject {
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
                 #if DEBUG
-                print("[InventoryVM] ⚠️ Create backend failed: \(error) — kept locally")
+                print("[InventoryVM] create backend failed: \(error) — enqueuing for replay")
                 #endif
-                // No rollback: local state preservado.
-                // El producto existirá localmente; en el próximo restart podría desaparecer si backend no lo tiene.
-                await MainActor.run {
-                    self.error = "Guardado localmente. No se pudo sincronizar con el servidor."
-                }
+                await OfflineQueueService.shared.enqueue(
+                    .createProduct(clientId: UUID(), product: product, enqueuedAt: Date())
+                )
             }
         }
 
