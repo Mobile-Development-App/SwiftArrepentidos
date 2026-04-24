@@ -291,10 +291,6 @@ struct ScanView: View {
             guard scanState == .scanning else { return }
 
             await MainActor.run { withAnimation { scanState = .analyzing } }
-
-            // 🔑 Await la captura asíncrona. Esto resuelve la race condition donde
-            // analyzeWithAI() leía capturedImage antes de que el delegate de AVFoundation
-            // lo hubiera escrito.
             let capturedImage = await cameraService.capturePhotoAsync()
 
             await analyzeWithAIAsync(image: capturedImage, barcode: nil)

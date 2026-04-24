@@ -169,7 +169,6 @@ class InventoryViewModel: ObservableObject {
 
 
     func addProduct(_ product: Product) {
-        // Optimistic update: el producto se ve inmediatamente
         products.append(product)
         persistence.saveProducts(products)
         generateAlerts(for: product)
@@ -236,16 +235,30 @@ class InventoryViewModel: ObservableObject {
         NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
 
         Task {
+            if !ConnectivityService.shared.isOnline {
+                await OfflineQueueService.shared.enqueue(
+                    .deleteProduct(productId: product.id, enqueuedAt: Date())
+                )
+                await MainActor.run {
+                    self.error = "Eliminado localmente. Sincronizaremos al volver online."
+                }
+                return
+            }
+
+            let token = await PipelineLogger.shared.start(.storage)
             do {
-                _ = try await productRepo.updateProduct(id: product.id.apiString, product)
+                try await productRepo.deleteProduct(id: product.id.apiString)
+                await PipelineLogger.shared.end(token)
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
                 #if DEBUG
-                print("[InventoryVM] ⚠️ Update backend failed: \(error) — kept locally")
+                print("[InventoryVM]  Delete backend failed: \(error) — queued for replay")
                 #endif
-                // No rollback: el cambio del usuario gana
+                await OfflineQueueService.shared.enqueue(
+                    .deleteProduct(productId: product.id, enqueuedAt: Date())
+                )
                 await MainActor.run {
-                    self.error = "Cambios guardados localmente. Sincronizará cuando el servidor responda."
+                    self.error = "Eliminado localmente. Reintentaremos en segundo plano."
                 }
             }
         }
