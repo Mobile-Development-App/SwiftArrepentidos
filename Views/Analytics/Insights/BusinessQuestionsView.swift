@@ -13,6 +13,7 @@ struct BusinessQuestionsView: View {
 
     @StateObject private var viewModel = BusinessQuestionsViewModel()
     @StateObject private var sprint3VM = Sprint3BQsViewModel()
+    @StateObject private var insightsVM = InventoryInsightsViewModel()
     @ObservedObject private var network = NetworkMonitor.shared
 
     var body: some View {
@@ -44,6 +45,14 @@ struct BusinessQuestionsView: View {
                     summary: sprint3VM.featureUsage,
                     isLoading: sprint3VM.isLoading
                 )
+                RestockCyclesCard(
+                    dashboard: insightsVM.restockDashboard,
+                    isLoading: insightsVM.isLoadingRestock
+                )
+                ExpirationActionCard(
+                    dashboard: insightsVM.expirationDashboard,
+                    isLoading: insightsVM.isLoadingExpiration
+                )
                 Spacer().frame(height: 40)
             }
             .padding(.horizontal, 16)
@@ -65,6 +74,7 @@ struct BusinessQuestionsView: View {
             products: inventoryViewModel.products
         )
         await sprint3VM.refresh()
+        await insightsVM.refresh(products: inventoryViewModel.products)
         // BQ8
         await AnalyticsLogService.shared.record(
             kind: .featureAccessed,
