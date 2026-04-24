@@ -3,19 +3,16 @@ import Charts
 
 /// Sprint 3 Business Questions dashboard (Juan Felipe).
 ///
-/// Hosts two answer cards:
 ///   • BQ2 — Inventory valuation per store
 ///   • BQ6 — Peak hours at which the user adds products
 ///
-/// Both cards derive their data from local caches, so the screen is
-/// functional in airplane mode. A banner surfaces the current connectivity
-/// state so the user understands whether numbers reflect a freshly-synced
-/// catalog or the last offline snapshot.
+
 struct BusinessQuestionsView: View {
     @EnvironmentObject private var inventoryViewModel: InventoryViewModel
     @EnvironmentObject private var storeViewModel: StoreViewModel
 
     @StateObject private var viewModel = BusinessQuestionsViewModel()
+    @StateObject private var sprint3VM = Sprint3BQsViewModel()
     @ObservedObject private var network = NetworkMonitor.shared
 
     var body: some View {
@@ -31,6 +28,22 @@ struct BusinessQuestionsView: View {
                     summary: viewModel.peakActivity,
                     isLoading: viewModel.isLoadingPeak
                 )
+                PipelineLatencyCard(
+                    summary: sprint3VM.latency,
+                    isLoading: sprint3VM.isLoading
+                )
+                PeakScreensCard(
+                    summary: sprint3VM.peakScreens,
+                    isLoading: sprint3VM.isLoading
+                )
+                ScanAccuracyCard(
+                    summary: sprint3VM.scanAccuracy,
+                    isLoading: sprint3VM.isLoading
+                )
+                FeatureUsageCard(
+                    summary: sprint3VM.featureUsage,
+                    isLoading: sprint3VM.isLoading
+                )
                 Spacer().frame(height: 40)
             }
             .padding(.horizontal, 16)
@@ -44,7 +57,11 @@ struct BusinessQuestionsView: View {
             // When we transition online, re-run so the valuation picks up
             // anything the inventory sync pulled in.
             guard isConnected else { return }
-            Task { await refresh() }
+            Task { await sprint3VM.refresh()
+                await AnalyticsLogService.shared.record(
+                kind: .featureAccessed,
+                attributes: ["feature": "business_questions_screen"]
+            ) }
         }
     }
 
