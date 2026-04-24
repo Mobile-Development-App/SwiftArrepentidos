@@ -55,7 +55,7 @@ struct MainTabView: View {
                     selectedTab = .home
                 }
             }
-        }}
+        }
         .fullScreenCover(isPresented: $showScanSheet) {
             ScanView()
         }
