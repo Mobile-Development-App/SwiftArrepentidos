@@ -22,6 +22,9 @@ packages:
   Firebase:
     url: https://github.com/firebase/firebase-ios-sdk
     from: "11.0.0"
+  Kingfisher:
+    url: https://github.com/onevcat/Kingfisher
+    from: "7.10.0"
 
 targets:
   InventarIA:
@@ -58,3 +61,4 @@ targets:
         product: FirebaseAuth
       - package: Firebase
         product: FirebaseCore
+      - package: Kingfisher
