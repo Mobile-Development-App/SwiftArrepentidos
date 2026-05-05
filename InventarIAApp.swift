@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import FirebaseCore
 import UIKit
 
@@ -27,6 +28,13 @@ struct InventarIAApp: App {
 
         PersistenceService.shared.clearMockDataIfNeeded()
 
+        // Inicializa el container de SwiftData (BD Local Relacional). El
+        // `bootstrapLaunchEvent` se dispara desde `ContentView.onAppear`
+        // para garantizar que la scene ya está montada y `@MainActor` está
+        // disponible — algunos arranques de iOS 17 no programan tareas
+        // de App.init lo suficientemente rápido y se pierden.
+        _ = LocalDatabaseService.shared
+
         // offline nunca se replayean al volver la conexión
         OfflineQueueService.bootstrap(replayHandlers: .init(
             createProduct: { product in
@@ -51,6 +59,7 @@ struct InventarIAApp: App {
                 .environmentObject(analyticsViewModel)
                 .preferredColorScheme(settingsViewModel.isDarkMode ? .dark : .light)
                 .tint(AppColors.freshSky)
+                .modelContainer(LocalDatabaseService.shared.container)
         }
     }
 }
