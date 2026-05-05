@@ -79,20 +79,12 @@ struct ProductDetailView: View {
     }
 
     private var heroSection: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(
-                    LinearGradient(
-                        colors: [categoryColor.opacity(0.15), categoryColor.opacity(0.05)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-
-            Image(systemName: product.category.icon)
-                .font(.system(size: 64))
-                .foregroundColor(categoryColor)
-        }
+        CachedProductImage(
+            imageURL: product.imageURL,
+            category: product.category,
+            style: .hero
+        )
+        .frame(maxWidth: .infinity)
         .frame(height: 180)
         .overlay(alignment: .topTrailing) {
             StockBadge(status: product.stockStatus)

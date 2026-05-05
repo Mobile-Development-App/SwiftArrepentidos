@@ -9,15 +9,13 @@ struct ProductCardView: View {
     var body: some View {
         Button(action: { onTap?() }) {
             HStack(spacing: 14) {
-                // Product Image/Icon
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(categoryColor.opacity(0.12))
-                    Image(systemName: product.category.icon)
-                        .font(.system(size: 22))
-                        .foregroundColor(categoryColor)
-                }
-                .frame(width: 56, height: 56)
+                // Product Image/Icon — Kingfisher cache si imageURL existe,
+                // si no cae al icono de la categoría sin extra carga.
+                CachedProductImage(
+                    imageURL: product.imageURL,
+                    category: product.category,
+                    style: .thumbnail
+                )
 
                 // Product Info
                 VStack(alignment: .leading, spacing: 4) {

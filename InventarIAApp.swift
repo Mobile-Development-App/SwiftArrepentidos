@@ -27,6 +27,12 @@ struct InventarIAApp: App {
 
         PersistenceService.shared.clearMockDataIfNeeded()
 
+        // Configura la caché de imágenes (Kingfisher) con límites
+        // explícitos en memoria (50 MB / 200 entradas) y disco (200 MB,
+        // TTL 7 días). Justificación de los números en
+        // `Services/Cache/ImageCacheConfig.swift`.
+        ImageCacheConfig.bootstrap()
+
         // offline nunca se replayean al volver la conexión
         OfflineQueueService.bootstrap(replayHandlers: .init(
             createProduct: { product in
