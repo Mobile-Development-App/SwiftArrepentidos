@@ -112,6 +112,22 @@ class PersistenceService: ObservableObject {
             events = Array(events.suffix(1000))
         }
         save(events, to: "audit_log")
+
+        // Dual-write: replicamos cada audit a la BD relacional local
+        // (SwiftData / SQLite) para que sea consultable con `@Query` y
+        // predicados desde la pantalla de Debug. El JSON sigue siendo el
+        // origen de verdad para compatibilidad y para offline.
+        Task { @MainActor in
+            LocalDatabaseService.shared.insertAudit(
+                action: event.action,
+                entityType: event.entityType,
+                entityId: event.entityId,
+                entityName: event.entityName,
+                details: event.details,
+                userId: event.userId,
+                userName: event.userName
+            )
+        }
     }
 
     func loadAuditLog() -> [AuditEvent] { load(from: "audit_log") }
