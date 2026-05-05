@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import FirebaseCore
 import UIKit
 
@@ -26,6 +27,13 @@ struct InventarIAApp: App {
         _ = NetworkMonitor.shared
 
         PersistenceService.shared.clearMockDataIfNeeded()
+
+        // Inicializa el container de SwiftData (BD Local Relacional). El
+        // `bootstrapLaunchEvent` se dispara desde `ContentView.onAppear`
+        // para garantizar que la scene ya está montada y `@MainActor` está
+        // disponible — algunos arranques de iOS 17 no programan tareas
+        // de App.init lo suficientemente rápido y se pierden.
+        _ = LocalDatabaseService.shared
 
         // Configura la caché de imágenes (Kingfisher) con límites
         // explícitos en memoria (50 MB / 200 entradas) y disco (200 MB,
@@ -57,6 +65,7 @@ struct InventarIAApp: App {
                 .environmentObject(analyticsViewModel)
                 .preferredColorScheme(settingsViewModel.isDarkMode ? .dark : .light)
                 .tint(AppColors.freshSky)
+                .modelContainer(LocalDatabaseService.shared.container)
         }
     }
 }

@@ -59,6 +59,18 @@ actor UsageTrackingService {
             events.removeFirst(events.count - maxEvents / 2)
         }
         persist()
+
+        // Dual-write: replicamos a la BD relacional local (SwiftData) para
+        // que la misma información sea consultable con `@Query` y predicados.
+        // BQ6 sigue leyendo del JSON in-memory por velocidad.
+        let kindRaw = event.kind.rawValue
+        let attrs = event.attributes
+        Task { @MainActor in
+            LocalDatabaseService.shared.insertUsageEvent(
+                kind: kindRaw,
+                attributes: attrs
+            )
+        }
     }
 
     /// Convenience wrapper that builds the event for the caller.

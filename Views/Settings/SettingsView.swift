@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var showStoreManagement = false
     @State private var showTeamMembers = false
     @State private var showHelpCenter = false
+    @State private var showLocalDatabase = false
 
     var body: some View {
         NavigationStack {
@@ -53,6 +54,10 @@ struct SettingsView: View {
                             showHelpCenter = true
                         }
 
+                        settingsNavRow(icon: "cylinder.split.1x2.fill", title: "Base de Datos Local", color: AppColors.primary) {
+                            showLocalDatabase = true
+                        }
+
                         disabledSettingRow(icon: "doc.text.fill", title: "Términos y Condiciones", value: "Próximamente", color: AppColors.textSecondary)
                     }
 
@@ -93,6 +98,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showHelpCenter) {
                 HelpCenterView()
+            }
+            .sheet(isPresented: $showLocalDatabase) {
+                LocalDatabaseDebugView()
             }
             .alert("Cerrar Sesión", isPresented: $settingsViewModel.showingLogoutConfirmation) {
                 Button("Cancelar", role: .cancel) {}
