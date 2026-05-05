@@ -27,19 +27,58 @@ class AIRecognitionService: ObservableObject {
     var isClaudeEnabled: Bool { (claudeApiKey?.isEmpty == false) }
     var isOpenAIEnabled: Bool { (openAIApiKey?.isEmpty == false) }
 
+    /// Caché de resultados de IA por barcode. Sin esto, escanear el mismo
+    /// código dos veces seguidas re-llama a Claude/OpenAI y cuesta plata.
+    /// Usamos `NSCache` (no nuestro `LRUCache` custom) porque ya viene con:
+    ///   • Eviction automática bajo presión de memoria del OS
+    ///   • Thread-safety nativa
+    ///   • API estándar de Foundation
+    /// Cap a 64 entradas — un comerciante difícilmente escanea más antes de
+    /// reiniciar la app, y los resultados son livianos (~1 KB cada uno).
+    private let resultCache: NSCache<NSString, AIProductResultBox> = {
+        let cache = NSCache<NSString, AIProductResultBox>()
+        cache.countLimit = 64
+        cache.name = "ai.recognition.results"
+        return cache
+    }()
+
     // MARK: - Router (decides which engine to use)
 
     /// Entry point. Routes to the best available engine.
     /// Priority: Claude → OpenAI → Apple Vision.
     func analyze(image: UIImage, barcode: String? = nil) async -> AIProductResult {
+        // Cache lookup — sólo si tenemos barcode (la imagen sola no es key).
+        if let barcode, !barcode.isEmpty,
+           let cached = resultCache.object(forKey: barcode as NSString) {
+            #if DEBUG
+            print("[AIRecognition] cache hit for barcode \(barcode)")
+            #endif
+            return cached.value
+        }
+
+        let result: AIProductResult
         if isClaudeEnabled {
-            return await analyzeWithClaude(image: image, barcode: barcode)
+            result = await analyzeWithClaude(image: image, barcode: barcode)
+        } else if openAIApiKey != nil, isOpenAIEnabled {
+            result = await analyzeWithOpenAI(image: image, barcode: barcode)
+        } else {
+            // Guard: si no hay ninguna API key, fallback gratis a Apple Vision.
+            result = await analyzeWithVision(image: image, barcode: barcode)
         }
-        // Guard de Santiago: si no hay OpenAI key tampoco, fallback gratis a Vision
-        guard let _ = openAIApiKey, isOpenAIEnabled else {
-            return await analyzeWithVision(image: image, barcode: barcode)
+
+        // Sólo cacheamos si la respuesta tiene contenido útil. Nunca cacheamos
+        // un fallo de la IA — el siguiente intento podría tener mejor luz/foco.
+        if let barcode, !barcode.isEmpty, !result.isEmpty, result.confidence > 0 {
+            resultCache.setObject(AIProductResultBox(value: result),
+                                  forKey: barcode as NSString)
         }
-        return await analyzeWithOpenAI(image: image, barcode: barcode)
+
+        return result
+    }
+
+    /// Vacía la caché — llamado en logout.
+    func clearResultCache() {
+        resultCache.removeAllObjects()
     }
 
     // MARK: - Apple Vision (on-device, free)
@@ -438,4 +477,11 @@ struct AIProductResult {
     var isEmpty: Bool {
         name.isEmpty && brand.isEmpty && barcode == nil
     }
+}
+
+/// Wrapper de referencia para almacenar `AIProductResult` (struct) en
+/// `NSCache`, que sólo acepta `AnyObject`.
+final class AIProductResultBox {
+    let value: AIProductResult
+    init(value: AIProductResult) { self.value = value }
 }
