@@ -45,6 +45,29 @@ final class APIClient {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
+
+        // Caché HTTP explícita (no default). El URLCache de Foundation actúa
+        // como caché compartido a nivel de URL; respeta los `Cache-Control`
+        // del backend y permite respuestas instantáneas para GETs idempotentes
+        // (catálogos, dashboards, lookups de OpenFoodFacts).
+        //
+        //   memoria : 16 MB   — cubre listas de productos + dashboard json
+        //   disco   :  64 MB  — persistente entre cold-starts
+        //
+        // Se aloja en `Caches/api_response_cache/` para que el OS lo limpie
+        // bajo presión de memoria sin afectar `Application Support` (que es
+        // donde viven SwiftData, JSON snapshots y la cola offline).
+        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("api_response_cache", isDirectory: true)
+        let urlCache = URLCache(
+            memoryCapacity: 16 * 1024 * 1024,
+            diskCapacity: 64 * 1024 * 1024,
+            directory: cacheDirectory
+        )
+        config.urlCache = urlCache
+        config.requestCachePolicy = .useProtocolCachePolicy
+        URLCache.shared = urlCache
+
         session = URLSession(configuration: config)
 
         encoder = JSONEncoder()
