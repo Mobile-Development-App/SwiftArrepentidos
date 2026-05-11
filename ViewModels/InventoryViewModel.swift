@@ -16,29 +16,8 @@ class InventoryViewModel: ObservableObject {
 
     // Search and Filter
     @Published var searchText = ""
-    // FIX: Local Storage (UserDefaults) — persistimos el último filtro y
-    // categoría seleccionados para que el usuario no tenga que reconfigurar
-    // su vista cada vez que abre la app. Usamos `didSet` con un guard de
-    // `loadingPreferences` para evitar escrituras durante el restore.
-    @Published var selectedFilter: StockFilter = .all {
-        didSet {
-            guard !loadingPreferences else { return }
-            UserDefaults.standard.set(selectedFilter.rawValue, forKey: Self.inventoryFilterKey)
-        }
-    }
-    @Published var selectedCategory: ProductCategory? {
-        didSet {
-            guard !loadingPreferences else { return }
-            if let cat = selectedCategory {
-                UserDefaults.standard.set(cat.rawValue, forKey: Self.inventoryCategoryKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: Self.inventoryCategoryKey)
-            }
-        }
-    }
-    private var loadingPreferences = false
-    private static let inventoryFilterKey = "inventory.selectedFilter"
-    private static let inventoryCategoryKey = "inventory.selectedCategory"
+    @Published var selectedFilter: StockFilter = .all
+    @Published var selectedCategory: ProductCategory?
 
     // Product Form
     @Published var editingProduct: Product?
@@ -66,20 +45,6 @@ class InventoryViewModel: ObservableObject {
     }
 
     init() {
-        // FIX: Local Storage (UserDefaults) — restauramos preferencias del
-        // usuario ANTES de exponer cualquier @Published para evitar
-        // notificaciones espurias a SwiftUI.
-        loadingPreferences = true
-        if let raw = UserDefaults.standard.string(forKey: Self.inventoryFilterKey),
-           let filter = StockFilter(rawValue: raw) {
-            selectedFilter = filter
-        }
-        if let raw = UserDefaults.standard.string(forKey: Self.inventoryCategoryKey),
-           let cat = ProductCategory(rawValue: raw) {
-            selectedCategory = cat
-        }
-        loadingPreferences = false
-
         // Don't load data here — storeId may not be available yet.
         // Data is loaded when MainTabView appears (after login).
         logoutObserver = NotificationCenter.default.addObserver(

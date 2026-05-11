@@ -20,68 +20,21 @@ final class InventoryInsightsViewModel: ObservableObject {
     private let cycleAnalyzer = RestockCycleAnalyzer.shared
     private let expirationAnalyzer = ExpirationInsightsAnalyzer.shared
 
-    // FIX: Caching — caché en `NSCache` con `countLimit` y `totalCostLimit`
-    // explícitos en vez de un dictionary manual con TTL ad-hoc. Beneficios:
-    //   • Eviction automática bajo memory warnings del OS
-    //   • Thread-safe nativo (no necesitamos coordinar mutaciones)
-    //   • `countLimit: 4` cubre las 2 BQ dashboards × 2 variantes (force/no-force)
-    //     sin desperdiciar memoria
-    //   • `totalCostLimit: 4 MB` blinda contra dashboards muy grandes
-    private let dashboardCache: NSCache<NSString, AnyObject> = {
-        let cache = NSCache<NSString, AnyObject>()
-        cache.countLimit = 4
-        cache.totalCostLimit = 4 * 1024 * 1024
-        cache.name = "inventoryInsights.dashboards"
-        return cache
-    }()
-
-    // FIX: Caching — wrappers de referencia para guardar structs (Sendable
-    // pero value-type) en NSCache, que requiere `AnyObject`.
-    private final class CachedRestock: AnyObject {
-        let value: RestockCyclesDashboard
-        let cachedAt: Date
-        init(_ v: RestockCyclesDashboard) { self.value = v; self.cachedAt = Date() }
+    // Tiny TTL cache to avoid recomputing while the user toggles around.
+    private struct CacheEntry<T> {
+        let value: T
+        let at: Date
     }
-    private final class CachedExpiration: AnyObject {
-        let value: ExpirationInsightsDashboard
-        let cachedAt: Date
-        init(_ v: ExpirationInsightsDashboard) { self.value = v; self.cachedAt = Date() }
-    }
-    private static let restockKey: NSString = "restockDashboard"
-    private static let expirationKey: NSString = "expirationDashboard"
+    private var restockCache: CacheEntry<RestockCyclesDashboard>?
+    private var expirationCache: CacheEntry<ExpirationInsightsDashboard>?
     private let ttl: TimeInterval = 5 * 60
 
     private var cancellables: Set<AnyCancellable> = []
-    private var cycleStreamTask: Task<Void, Never>?
 
     init() {
         NotificationCenter.default.publisher(for: .inventoryDidChange)
             .sink { [weak self] _ in self?.invalidateCache() }
             .store(in: &cancellables)
-
-        // FIX: Multithreading (AsyncSequence) — observamos el stream del
-        // `RestockCycleStore`. Cada vez que se registra un ciclo nuevo (por
-        // ejemplo, cuando `InventoryViewModel.logRestockIfNeeded` graba uno),
-        // invalidamos el caché de BQ3 para que la próxima lectura sea fresh.
-        // Esto reemplaza el patrón "poll cada N segundos" por reactividad
-        // real basada en eventos.
-        cycleStreamTask = Task { [weak self] in
-            guard let stream = await Self.cycleStreamHandle() else { return }
-            for await _ in stream {
-                await MainActor.run {
-                    self?.dashboardCache.removeObject(forKey: Self.restockKey)
-                }
-            }
-        }
-    }
-
-    deinit {
-        cycleStreamTask?.cancel()
-    }
-
-    // FIX: AsyncSequence — helper para acceder al stream nonisolated del actor.
-    private static func cycleStreamHandle() async -> AsyncStream<RestockCycle>? {
-        RestockCycleStore.shared.cycleEvents
     }
 
     /// Re-computes BQ3 and BQ4 in parallel.
@@ -96,13 +49,10 @@ final class InventoryInsightsViewModel: ObservableObject {
     }
 
     func refreshRestock(products: [Product], forceFresh: Bool) async {
-        // FIX: Caching — lookup en NSCache con check de TTL. NSCache
-        // descarta entradas bajo presión de memoria, no necesitamos
-        // limpiar manualmente.
         if !forceFresh,
-           let cached = dashboardCache.object(forKey: Self.restockKey) as? CachedRestock,
-           Date().timeIntervalSince(cached.cachedAt) < ttl {
-            restockDashboard = cached.value
+           let hit = restockCache,
+           Date().timeIntervalSince(hit.at) < ttl {
+            restockDashboard = hit.value
             return
         }
         isLoadingRestock = true
@@ -110,26 +60,21 @@ final class InventoryInsightsViewModel: ObservableObject {
         let cycles = await cycleStore.cycles(within: 90)
         let result = await cycleAnalyzer.compute(products: products, cycles: cycles)
         restockDashboard = result
-        // FIX: Caching — guardamos con cost aproximado (32B por ProductRestockStats).
-        dashboardCache.setObject(CachedRestock(result),
-                                 forKey: Self.restockKey,
-                                 cost: max(1024, result.products.count * 32))
+        restockCache = CacheEntry(value: result, at: Date())
     }
 
     func refreshExpiration(products: [Product], forceFresh: Bool) async {
         if !forceFresh,
-           let cached = dashboardCache.object(forKey: Self.expirationKey) as? CachedExpiration,
-           Date().timeIntervalSince(cached.cachedAt) < ttl {
-            expirationDashboard = cached.value
+           let hit = expirationCache,
+           Date().timeIntervalSince(hit.at) < ttl {
+            expirationDashboard = hit.value
             return
         }
         isLoadingExpiration = true
         defer { isLoadingExpiration = false }
         let result = await expirationAnalyzer.compute(products: products)
         expirationDashboard = result
-        dashboardCache.setObject(CachedExpiration(result),
-                                 forKey: Self.expirationKey,
-                                 cost: max(1024, result.totalAtRisk * 32))
+        expirationCache = CacheEntry(value: result, at: Date())
     }
 
     func logRestockIfNeeded(previous: Product?, current: Product) async {
@@ -151,6 +96,7 @@ final class InventoryInsightsViewModel: ObservableObject {
     }
 
     private func invalidateCache() {
-        dashboardCache.removeAllObjects()
+        restockCache = nil
+        expirationCache = nil
     }
 }
