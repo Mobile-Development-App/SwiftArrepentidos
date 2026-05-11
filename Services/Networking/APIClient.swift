@@ -224,4 +224,7 @@ extension Notification.Name {
     static let authTokenExpired = Notification.Name("authTokenExpired")
     static let userDidLogout = Notification.Name("userDidLogout")
     static let inventoryDidChange = Notification.Name("inventoryDidChange")
+    /// Emitida por `OfflineQueueService.drain()` con `userInfo["syncedProductIds"]: [UUID]`.
+    /// `InventoryViewModel` la escucha para marcar los productos drenados como `.synced`.
+    static let inventoryDidSync = Notification.Name("inventoryDidSync")
 }

@@ -34,6 +34,7 @@ class InventoryViewModel: ObservableObject {
     private let persistence = PersistenceService.shared
     private let networkMonitor = NetworkMonitor.shared
     private var logoutObserver: Any?
+    private var syncObserver: Any?
 
     enum StockFilter: String, CaseIterable {
         case all = "Todos"
@@ -51,11 +52,40 @@ class InventoryViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.clearData() }
         }
+        // Cuando la cola offline drena exitosamente, marca los productos
+        // que entraron como `.synced` para que la UI quite el badge "⏳".
+        syncObserver = NotificationCenter.default.addObserver(
+            forName: .inventoryDidSync, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let ids = note.userInfo?["syncedProductIds"] as? [UUID] else { return }
+            Task { @MainActor in self?.markProductsSynced(ids: ids) }
+        }
     }
 
     deinit {
         if let observer = logoutObserver {
             NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = syncObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Actualiza el `syncStatus` de los productos cuyos IDs vienen en `ids`
+    /// a `.synced`. Llamado desde el observer de `inventoryDidSync` cuando
+    /// la cola offline drena.
+    private func markProductsSynced(ids: [UUID]) {
+        var changed = false
+        for id in ids {
+            if let i = products.firstIndex(where: { $0.id == id }),
+               products[i].syncStatus != .synced {
+                products[i].syncStatus = .synced
+                changed = true
+            }
+        }
+        if changed {
+            persistence.saveProducts(products)
+            updateStats()
         }
     }
 
@@ -169,9 +199,15 @@ class InventoryViewModel: ObservableObject {
 
 
     func addProduct(_ product: Product) {
-        products.append(product)
+        // Marca el syncStatus de entrada según conectividad: si estamos
+        // offline arranca como pendingCreate y se va a la cola; si estamos
+        // online queda pendingUpdate hasta que el backend confirme.
+        var local = product
+        local.syncStatus = ConnectivityService.shared.isOnline ? .pendingUpdate : .pendingCreate
+        local.lastUpdated = Date()
+        products.append(local)
         persistence.saveProducts(products)
-        generateAlerts(for: product)
+        generateAlerts(for: local)
         updateStats()
         HapticManager.notification(.success)
 
@@ -179,9 +215,9 @@ class InventoryViewModel: ObservableObject {
             await UsageTrackingService.shared.record(
                 kind: .productCreated,
                 attributes: [
-                    "productId": product.id.uuidString,
-                    "category": product.category.rawValue,
-                    "location": product.location
+                    "productId": local.id.uuidString,
+                    "category": local.category.rawValue,
+                    "location": local.location
                 ]
             )
         }
@@ -194,17 +230,19 @@ class InventoryViewModel: ObservableObject {
                 //offline path: encolar y asumir éxito local.
                 //cuando vuelva la conexión offlineQueueService ejecutará el createProduct real.
                 await OfflineQueueService.shared.enqueue(
-                    .createProduct(clientId: UUID(), product: product, enqueuedAt: Date())
+                    .createProduct(clientId: UUID(), product: local, enqueuedAt: Date())
                 )
                 return
             }
             do {
                 let token = await PipelineLogger.shared.start(.storage)
-                let created = try await productRepo.createProduct(product)
+                let created = try await productRepo.createProduct(local)
                 await PipelineLogger.shared.end(token)
 
-                if let index = products.firstIndex(where: { $0.id == product.id }) {
-                    products[index] = created
+                if let index = products.firstIndex(where: { $0.id == local.id }) {
+                    var fresh = created
+                    fresh.syncStatus = .synced
+                    products[index] = fresh
                     persistence.saveProducts(products)
                 }
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
@@ -212,53 +250,94 @@ class InventoryViewModel: ObservableObject {
                 #if DEBUG
                 print("[InventoryVM] create backend failed: \(error) — enqueuing for replay")
                 #endif
+                // Falló online: el producto pasa a pendingCreate y se encola
+                if let index = products.firstIndex(where: { $0.id == local.id }) {
+                    products[index].syncStatus = .pendingCreate
+                    persistence.saveProducts(products)
+                }
                 await OfflineQueueService.shared.enqueue(
-                    .createProduct(clientId: UUID(), product: product, enqueuedAt: Date())
+                    .createProduct(clientId: UUID(), product: local, enqueuedAt: Date())
                 )
             }
         }
 
-        logAudit(action: "Producto Agregado", entityType: "Product", entityId: product.id, entityName: product.name, details: "SKU: \(product.sku), Cantidad: \(product.quantity)")
+        logAudit(action: "Producto Agregado", entityType: "Product", entityId: local.id, entityName: local.name, details: "SKU: \(local.sku), Cantidad: \(local.quantity)")
     }
 
     func updateProduct(_ product: Product) {
         guard let index = products.firstIndex(where: { $0.id == product.id }) else { return }
         let oldProduct = products[index]
 
-        // Optimistic update: cambios visibles inmediatamente
-        products[index] = product
+        // Optimistic update: cambios visibles inmediatamente. Si el producto
+        // todavía no se sincronizó (pendingCreate), conserva ese estado en
+        // memoria — la edición se mergeará con la operación encolada.
+        var updated = product
+        if oldProduct.syncStatus == .pendingCreate {
+            updated.syncStatus = .pendingCreate
+        } else if !ConnectivityService.shared.isOnline {
+            updated.syncStatus = .pendingUpdate
+        }
+        updated.lastUpdated = Date()
+        products[index] = updated
         persistence.saveProducts(products)
-        generateAlerts(for: product)
+        generateAlerts(for: updated)
         updateStats()
 
         // Analytics refresca inmediatamente con el cambio local
         NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
 
         Task {
-            if !ConnectivityService.shared.isOnline {
-                await OfflineQueueService.shared.enqueue(
-                    .deleteProduct(productId: product.id, enqueuedAt: Date())
+            // CASO 1: el producto aún no existe en el backend (creado offline
+            // y todavía sin sincronizar). NO hacemos PATCH — eso daría 404.
+            // Le decimos al `OfflineQueueService` que mergee este edit con
+            // la `createProduct` ya encolada.
+            if oldProduct.syncStatus == .pendingCreate {
+                await OfflineQueueService.shared.coalesceEdit(
+                    productId: updated.id,
+                    newProduct: updated
                 )
                 await MainActor.run {
-                    self.error = "Eliminado localmente. Sincronizaremos al volver online."
+                    self.error = "Cambios guardados localmente. Sincronizaremos al volver online."
                 }
                 return
             }
 
+            // CASO 2: estamos offline pero el producto sí existe en el backend.
+            // Encolamos un updateProduct para drenar cuando vuelva la red.
+            if !ConnectivityService.shared.isOnline {
+                await OfflineQueueService.shared.enqueue(
+                    .updateProduct(productId: updated.id, product: updated, enqueuedAt: Date())
+                )
+                await MainActor.run {
+                    self.error = "Cambios guardados localmente. Sincronizaremos al volver online."
+                }
+                return
+            }
+
+            // CASO 3: estamos online y el producto está en el backend → PATCH
+            // directo. Marcamos pendingUpdate hasta que la respuesta confirme.
             let token = await PipelineLogger.shared.start(.storage)
             do {
-                try await productRepo.deleteProduct(id: product.id.apiString)
+                let synced = try await productRepo.updateProduct(id: updated.id.apiString, updated)
                 await PipelineLogger.shared.end(token)
+                await MainActor.run {
+                    if let i = self.products.firstIndex(where: { $0.id == synced.id }) {
+                        var fresh = synced
+                        fresh.syncStatus = .synced
+                        self.products[i] = fresh
+                        self.persistence.saveProducts(self.products)
+                    }
+                }
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
                 #if DEBUG
-                print("[InventoryVM]  Delete backend failed: \(error) — queued for replay")
+                print("[InventoryVM] Update backend failed: \(error) — queued for replay")
                 #endif
                 await OfflineQueueService.shared.enqueue(
-                    .deleteProduct(productId: product.id, enqueuedAt: Date())
+                    .updateProduct(productId: updated.id, product: updated, enqueuedAt: Date())
                 )
                 await MainActor.run {
-                    self.error = "Eliminado localmente. Reintentaremos en segundo plano."
+                    self.error = "Cambios guardados localmente. Reintentaremos en segundo plano."
                 }
             }
         }
@@ -279,16 +358,35 @@ class InventoryViewModel: ObservableObject {
         NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
 
         Task {
+            // CASO 1: el producto nunca llegó al backend (pendingCreate). En
+            // vez de encolar una delete que daría 404, simplemente removemos
+            // la `createProduct` pendiente de la cola.
+            if product.syncStatus == .pendingCreate {
+                let removed = await OfflineQueueService.shared.dropPendingCreate(productId: product.id)
+                if removed { return }
+            }
+
+            // CASO 2: offline — encolar el delete para drenar después.
+            if await !ConnectivityService.shared.isOnline {
+                await OfflineQueueService.shared.enqueue(
+                    .deleteProduct(productId: product.id, enqueuedAt: Date())
+                )
+                return
+            }
+
+            // CASO 3: online — intentar delete directo.
             do {
                 try await productRepo.deleteProduct(id: product.id.apiString)
                 NotificationCenter.default.post(name: .inventoryDidChange, object: nil)
             } catch {
                 #if DEBUG
-                print("[InventoryVM] ⚠️ Delete backend failed: \(error) — kept locally deleted")
+                print("[InventoryVM] ⚠️ Delete backend failed: \(error) — queued for replay")
                 #endif
-                // No rollback: el usuario quiso eliminarlo
+                await OfflineQueueService.shared.enqueue(
+                    .deleteProduct(productId: product.id, enqueuedAt: Date())
+                )
                 await MainActor.run {
-                    self.error = "Eliminado localmente. Podría reaparecer si el servidor no lo recibió."
+                    self.error = "Eliminado localmente. Reintentaremos al volver online."
                 }
             }
         }

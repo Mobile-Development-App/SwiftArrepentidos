@@ -132,8 +132,21 @@ final class AuthRepository: AuthRepositoryProtocol {
     /// Sign in using Google or Microsoft via Firebase OAuth.
     /// Uses ASWebAuthenticationSession (no native SDKs needed).
     /// Requires the provider to be enabled in Firebase Console.
+    ///
+    /// **Requisito de config:** el `GoogleService-Info.plist` debe contener
+    /// `REVERSED_CLIENT_ID` y el `Info.plist` debe declararlo en
+    /// `CFBundleURLTypes`. Sin eso, ASWebAuthenticationSession abre el
+    /// browser pero NO puede regresar a la app, dejando el flujo colgado.
+    /// Si el plist actual no tiene `REVERSED_CLIENT_ID`, hay que descargar
+    /// uno nuevo del Firebase Console DESPUÉS de habilitar Google Sign-In.
     @MainActor
     func signInWithOAuth(providerID: String) async throws -> User {
+        // Pre-flight de conectividad. Sin esto Firebase abre el browser
+        // y se cuelga sin feedback al usuario.
+        guard NetworkMonitor.shared.isConnected else {
+            throw APIError.offline
+        }
+
         let provider = OAuthProvider(providerID: providerID)
 
         switch providerID {
@@ -148,15 +161,22 @@ final class AuthRepository: AuthRepositoryProtocol {
         default: break
         }
 
-        // Firebase abre ASWebAuthenticationSession automáticamente cuando uiDelegate es nil en iOS 13+
+        // Firebase abre ASWebAuthenticationSession automáticamente cuando uiDelegate es nil en iOS 13+.
+        // El `withCheckedThrowingContinuation` blinda contra el caso de
+        // doble-resume (que ocurría cuando el flujo OAuth fallaba a mitad
+        // de camino — y crasheaba la app). Marcamos `didResume` para
+        // garantizar exactly-once.
         let credential: AuthCredential = try await withCheckedThrowingContinuation { continuation in
+            var didResume = false
             provider.getCredentialWith(nil) { credential, error in
+                guard !didResume else { return }
+                didResume = true
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else if let credential = credential {
                     continuation.resume(returning: credential)
                 } else {
-                    continuation.resume(throwing: APIError.unknown("OAuth no devolvió credencial"))
+                    continuation.resume(throwing: APIError.unknown("OAuth no devolvió credencial — revisa la configuración de URL scheme."))
                 }
             }
         }
