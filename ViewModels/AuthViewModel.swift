@@ -144,6 +144,14 @@ class AuthViewModel: ObservableObject {
             loginError = "Ingresa un correo válido y contraseña"
             return
         }
+        // Pre-flight de conectividad: ANTES de tocar Firebase. Firebase tira
+        // un NSError genérico cuando no hay red y eso terminaba mostrando
+        // "Credenciales incorrectas" — fix de feedback del Sprint anterior.
+        guard NetworkMonitor.shared.isConnected else {
+            loginError = "No hay conexión a internet. Activa tu conexión e inténtalo de nuevo."
+            HapticManager.notification(.error)
+            return
+        }
         isLoggingIn = true
         loginError = nil
 
@@ -157,7 +165,8 @@ class AuthViewModel: ObservableObject {
                 withAnimation(.easeInOut(duration: 0.3)) { self.isAuthenticated = true }
                 HapticManager.notification(.success)
             } catch {
-                // No leak: mismo mensaje para user-not-found y wrong-password
+                // mapAuthError distingue red de credenciales (vía codes
+                // 17020/17993 de Firebase Auth, o APIError.offline).
                 self.loginError = self.mapAuthError(error, fallback: "Credenciales incorrectas")
                 HapticManager.notification(.error)
             }
@@ -233,6 +242,16 @@ class AuthViewModel: ObservableObject {
 
     private func signInWithOAuth(providerID: String, providerName: String) {
         guard !isLoggingIn else { return }
+
+        // Pre-flight: sin red no llamamos a Firebase OAuth — la sesión web
+        // ASWebAuthenticationSession se quedaba colgada y dejaba el botón
+        // en estado de loading indefinido.
+        guard NetworkMonitor.shared.isConnected else {
+            loginError = "No hay conexión a internet. Activa tu conexión e inténtalo de nuevo."
+            HapticManager.notification(.error)
+            return
+        }
+
         isLoggingIn = true
         loginError = nil
 
@@ -247,19 +266,29 @@ class AuthViewModel: ObservableObject {
                 case .unknown(let message):
                     self.loginError = message
                 case .offline, .networkError:
-                    self.loginError = "Sin conexión. Revisa tu internet."
+                    self.loginError = "No hay conexión a internet. Activa tu conexión e inténtalo de nuevo."
                 default:
-                    self.loginError = "No se pudo iniciar sesión con \(providerName)."
+                    self.loginError = "No se pudo iniciar sesión con \(providerName). Inténtalo de nuevo."
                 }
                 HapticManager.notification(.error)
             } catch {
-                // Errores de Firebase SDK (user canceled, etc.)
+                // Errores de Firebase SDK / ASWebAuthenticationSession.
                 let nsErr = error as NSError
-                // Código 17020 = network error; 17995/17200 = canceled
-                if [17995, 17200].contains(nsErr.code) {
-                    self.loginError = nil  // usuario canceló, no mostrar error
-                } else {
-                    self.loginError = "No se pudo iniciar sesión con \(providerName)."
+                #if DEBUG
+                print("[Auth] OAuth error domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                #endif
+                switch nsErr.code {
+                case 17020, 17993:
+                    // Network error mid-flow
+                    self.loginError = "No hay conexión a internet. Activa tu conexión e inténtalo de nuevo."
+                case 17995, 17200, -3:
+                    // Usuario canceló (Firebase: 17995/17200, ASWebAuth: -3)
+                    self.loginError = nil
+                case 17999:
+                    // URL scheme no registrado — config faltante en Info.plist
+                    self.loginError = "Configuración de \(providerName) incompleta. Avisa al equipo."
+                default:
+                    self.loginError = "No se pudo iniciar sesión con \(providerName). Inténtalo de nuevo."
                 }
                 HapticManager.notification(.error)
             }
@@ -295,16 +324,41 @@ class AuthViewModel: ObservableObject {
 
     // MARK: - Helpers
 
-    /// Mapea errores a mensajes genéricos para no filtrar información
+    /// Mapea errores a mensajes genéricos para no filtrar información sensible
+    /// y para diferenciar correctamente "sin internet" de "credenciales malas".
+    ///
+    /// Casos cubiertos:
+    ///   • `APIError.offline` / `APIError.networkError` — capa nuestra
+    ///   • NSError de Firebase Auth con codes de red (17020, 17993, 17995)
+    ///   • Cualquier `URLError` que envuelva el problema de red
+    ///   • Default: el caller decide el mensaje (típicamente "Credenciales
+    ///     incorrectas" para login y "No se pudo crear la cuenta" para signup)
     private func mapAuthError(_ error: Error, fallback: String) -> String {
         if let apiError = error as? APIError {
             switch apiError {
             case .offline, .networkError:
-                return "Sin conexión. Revisa tu internet."
+                return "No hay conexión a internet. Activa tu conexión e inténtalo de nuevo."
             default:
                 break
             }
         }
+
+        // Firebase Auth tira NSError. Códigos relevantes de red:
+        //   17020 — FIRAuthErrorCodeNetworkError
+        //   17993 — captureCheckMissing / failover de red en algunos clientes
+        //   17995 — usuario canceló (en OAuth) — no es error real
+        let nsErr = error as NSError
+        if nsErr.domain == "FIRAuthErrorDomain", [17020, 17993].contains(nsErr.code) {
+            return "No hay conexión a internet. Activa tu conexión e inténtalo de nuevo."
+        }
+
+        // URLError de Foundation, por si algún path llama URLSession directo
+        if let urlErr = error as? URLError,
+           [.notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
+            .timedOut].contains(urlErr.code) {
+            return "No hay conexión a internet. Activa tu conexión e inténtalo de nuevo."
+        }
+
         return fallback
     }
 

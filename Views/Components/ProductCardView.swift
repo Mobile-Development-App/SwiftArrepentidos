@@ -19,10 +19,17 @@ struct ProductCardView: View {
 
                 // Product Info
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(product.name)
-                        .font(AppTypography.headlineFont)
-                        .foregroundColor(colorScheme == .dark ? AppColors.darkTextPrimary : AppColors.textPrimary)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(product.name)
+                            .font(AppTypography.headlineFont)
+                            .foregroundColor(colorScheme == .dark ? AppColors.darkTextPrimary : AppColors.textPrimary)
+                            .lineLimit(1)
+
+                        // Badge de sincronización offline — sólo visible
+                        // cuando el producto está pendiente de subir o
+                        // sincronizar con el backend.
+                        syncBadge
+                    }
 
                     HStack(spacing: 8) {
                         Text(product.sku)
@@ -90,6 +97,36 @@ struct ProductCardView: View {
         case .inStock: return AppColors.success
         case .lowStock: return AppColors.warning
         case .outOfStock: return AppColors.error
+        }
+    }
+
+    @ViewBuilder
+    private var syncBadge: some View {
+        switch product.syncStatus {
+        case .synced:
+            EmptyView()
+        case .pendingCreate:
+            HStack(spacing: 3) {
+                Image(systemName: "icloud.and.arrow.up")
+                    .font(.system(size: 9, weight: .medium))
+                Text("pendiente")
+                    .font(.system(size: 9, weight: .medium))
+            }
+            .foregroundColor(AppColors.warning)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(AppColors.warning.opacity(0.15))
+            .clipShape(Capsule())
+        case .pendingUpdate:
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 9, weight: .medium))
+                Text("sin sync")
+                    .font(.system(size: 9, weight: .medium))
+            }
+            .foregroundColor(AppColors.info)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(AppColors.info.opacity(0.15))
+            .clipShape(Capsule())
         }
     }
 }

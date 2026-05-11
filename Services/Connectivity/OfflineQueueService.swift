@@ -25,6 +25,22 @@ actor OfflineQueueService {
 
     func enqueue(_ op: QueuedOperation) {
         loadIfNeeded()
+        // Coalescing en la entrada también: si llega un updateProduct y ya
+        // hay un createProduct pendiente para el mismo productId, mergeamos.
+        if case .updateProduct(let pid, let newProduct, _) = op,
+           let createIdx = items.firstIndex(where: {
+               if case .createProduct(_, let p, _) = $0, p.id == pid { return true }
+               return false
+           }) {
+            if case .createProduct(let clientId, _, let createdAt) = items[createIdx] {
+                items[createIdx] = .createProduct(clientId: clientId, product: newProduct, enqueuedAt: createdAt)
+                persist()
+                #if DEBUG
+                print("[OfflineQueue] coalesced update into pending create for \(newProduct.name)")
+                #endif
+                return
+            }
+        }
         items.append(op)
         persist()
         #if DEBUG
@@ -32,9 +48,73 @@ actor OfflineQueueService {
         #endif
     }
 
+    /// Aplica una edición sobre un producto que todavía no se sincronizó —
+    /// es decir, hay una `createProduct` pendiente para `productId`. En vez
+    /// de encolar una segunda operación (que daría 404 en el backend porque
+    /// el producto no existe aún), reemplazamos el `product` dentro de la
+    /// `createProduct` encolada para que cuando drene tenga ya los cambios.
+    ///
+    /// Caso esquinado: si por alguna razón no encontramos el create pendiente
+    /// (debería ser imposible pero igual), encolamos un updateProduct normal
+    /// como fallback — peor caso el backend falla y lo reintentamos.
+    func coalesceEdit(productId: UUID, newProduct: Product) {
+        loadIfNeeded()
+        if let idx = items.firstIndex(where: {
+            if case .createProduct(_, let p, _) = $0, p.id == productId { return true }
+            return false
+        }) {
+            if case .createProduct(let clientId, _, let createdAt) = items[idx] {
+                items[idx] = .createProduct(
+                    clientId: clientId,
+                    product: newProduct,
+                    enqueuedAt: createdAt
+                )
+                persist()
+                #if DEBUG
+                print("[OfflineQueue] coalesced edit into pending create for \(newProduct.name)")
+                #endif
+                return
+            }
+        }
+
+        // Fallback defensivo
+        items.append(.updateProduct(productId: productId, product: newProduct, enqueuedAt: Date()))
+        persist()
+        #if DEBUG
+        print("[OfflineQueue] coalesceEdit: no pending create found — fallback to updateProduct queue entry")
+        #endif
+    }
+
+    /// Si el usuario borra un producto que todavía está pendiente de
+    /// crearse, simplemente removemos la `createProduct` de la cola — no
+    /// tiene sentido crearlo en el backend para luego borrarlo.
+    /// Devuelve `true` si removió un create pendiente (caller no necesita
+    /// encolar un delete).
+    func dropPendingCreate(productId: UUID) -> Bool {
+        loadIfNeeded()
+        let countBefore = items.count
+        items.removeAll {
+            if case .createProduct(_, let p, _) = $0, p.id == productId { return true }
+            return false
+        }
+        if items.count != countBefore {
+            persist()
+            #if DEBUG
+            print("[OfflineQueue] dropped pending create for product \(productId.uuidString.prefix(8))")
+            #endif
+            return true
+        }
+        return false
+    }
+
     func pending() -> [QueuedOperation] {
         loadIfNeeded()
         return items
+    }
+
+    func pendingCount() -> Int {
+        loadIfNeeded()
+        return items.count
     }
 
     func clear() {
@@ -73,15 +153,19 @@ actor OfflineQueueService {
         #endif
 
         var remaining: [QueuedOperation] = []
+        var syncedProductIds: [UUID] = []
         for op in items {
             do {
                 switch op {
                 case .createProduct(_, let product, _):
                     _ = try await handlers.createProduct(product)
+                    syncedProductIds.append(product.id)
                 case .updateProduct(let id, let product, _):
                     _ = try await handlers.updateProduct(id, product)
+                    syncedProductIds.append(product.id)
                 case .deleteProduct(let id, _):
                     try await handlers.deleteProduct(id)
+                    syncedProductIds.append(id)
                 }
             } catch {
                 #if DEBUG
@@ -92,6 +176,18 @@ actor OfflineQueueService {
         }
         items = remaining
         persist()
+
+        // Notifica a las view-models para que marquen los productos como
+        // `.synced`. El payload es el array de productIds que sí drenaron.
+        if !syncedProductIds.isEmpty {
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .inventoryDidSync,
+                    object: nil,
+                    userInfo: ["syncedProductIds": syncedProductIds]
+                )
+            }
+        }
     }
 
     private func loadIfNeeded() {
