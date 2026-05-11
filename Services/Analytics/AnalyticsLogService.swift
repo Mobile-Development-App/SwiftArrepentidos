@@ -25,6 +25,20 @@ actor AnalyticsLogService {
             events.removeFirst(events.count - maxEvents / 2)
         }
         persist()
+
+        // Dual-write a la BD relacional (SwiftData / SQLite). BQ5/BQ7/BQ8
+        // leen del JSON in-memory; esta tabla habilita consultas tipadas
+        // con `@Query` y predicados desde las pantallas de Debug.
+        let kindRaw = event.kind.rawValue
+        let attrs = event.attributes
+        let ts = event.timestamp
+        Task { @MainActor in
+            LocalDatabaseService.shared.insertAnalyticsEvent(
+                kind: kindRaw,
+                attributes: attrs,
+                timestamp: ts
+            )
+        }
     }
 
     func record(kind: AnalyticsEvent.Kind, attributes: [String: String] = [:]) {

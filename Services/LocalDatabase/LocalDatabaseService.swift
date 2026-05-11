@@ -44,10 +44,17 @@ final class LocalDatabaseService: ObservableObject {
     private var logoutObserver: NSObjectProtocol?
 
     private init() {
+        // Schema con 6 entidades:
+        //   • UserSession + AuditLogEntry + UsageEventRecord (Juan Felipe — auth)
+        //   • PipelineLatencySample + AnalyticsEventSample (Santiago — telemetría)
+        //   • LocalKeyValueEntry (Santiago — backing del LocalKeyValueStore)
         let schema = Schema([
             UserSession.self,
             AuditLogEntry.self,
-            UsageEventRecord.self
+            UsageEventRecord.self,
+            PipelineLatencySample.self,
+            AnalyticsEventSample.self,
+            LocalKeyValueEntry.self
         ])
         let config = ModelConfiguration(
             schema: schema,
@@ -87,15 +94,34 @@ final class LocalDatabaseService: ObservableObject {
         }
     }
 
-    /// Llamada una vez por cold-start desde `InventarIAApp.init`. Inserta un
-    /// audit `AppLaunched` para que la BD nunca se vea vacía en el demo y
-    /// para que tengamos un marcador de cada inicio de sesión de la app.
+    /// Llamada una vez por cold-start desde `ContentView.onAppear`. Inserta:
+    ///   • Un `AuditLogEntry` "AppLaunched" (JF — auth domain)
+    ///   • Un `PipelineLatencySample` de la fase ingestion (Santiago)
+    ///   • Un `AnalyticsEventSample` featureAccessed=AppLaunch (Santiago)
+    ///   • Una entrada KV `lastLaunchAt` (Santiago)
+    ///
+    /// Así las 6 tablas tienen contenido visible en la pantalla de Debug
+    /// desde el primer launch — útil para el viva voce.
     func bootstrapLaunchEvent() {
         insertAudit(
             action: "AppLaunched",
             entityType: "System",
             details: "Cold-start de la app — bootstrap del store relacional"
         )
+
+        // Triggers dual-write desde los actors de Santiago. Los `Task` los
+        // crea cada servicio internamente; nosotros sólo invocamos su API.
+        Task {
+            await PipelineLogger.shared.recordExternal(stage: .ingestion, durationMs: 0)
+            await AnalyticsLogService.shared.record(
+                kind: .featureAccessed,
+                attributes: ["feature": "AppLaunch"]
+            )
+        }
+
+        // KV store directo (no async, ya estamos en @MainActor).
+        let now = Date()
+        LocalKeyValueStore.shared.set(now, for: "lastLaunchAt", ttl: 7 * 86_400)
     }
 
     // MARK: - Session lifecycle
@@ -152,6 +178,93 @@ final class LocalDatabaseService: ObservableObject {
         )
         context.insert(record)
         try? context.save()
+    }
+
+    // MARK: - Inserts (Santiago — telemetría del pipeline analítico)
+
+    /// Persistencia relacional para los samples de latencia que normalmente
+    /// `PipelineLogger` guarda en JSON. Dual-write: el JSON sigue siendo
+    /// la fuente offline-first, esta tabla habilita queries con `@Query`.
+    func insertPipelineLatency(stage: String,
+                               durationMs: Double,
+                               timestamp: Date = Date()) {
+        let sample = PipelineLatencySample(
+            stage: stage,
+            durationMs: durationMs,
+            timestamp: timestamp
+        )
+        context.insert(sample)
+        try? context.save()
+    }
+
+    /// Persistencia relacional para los eventos analíticos que normalmente
+    /// `AnalyticsLogService` guarda en JSON. Misma estrategia dual-write.
+    func insertAnalyticsEvent(kind: String,
+                              attributes: [String: String],
+                              timestamp: Date = Date()) {
+        let json = encodeAttributes(attributes)
+        let sample = AnalyticsEventSample(
+            kind: kind,
+            timestamp: timestamp,
+            attributesJSON: json
+        )
+        context.insert(sample)
+        try? context.save()
+    }
+
+    // MARK: - Key-Value store (Santiago — BD llave-valor)
+
+    /// Inserta o actualiza el par `key → value` con TTL opcional.
+    /// Equivalente al `put` de Realm/Hive, con upsert atómico.
+    func setKeyValue(_ value: Data, for key: String, ttl: TimeInterval? = nil) {
+        let expiresAt: Date? = ttl.map { Date().addingTimeInterval($0) }
+        // Upsert: si la key existe, actualizamos; si no, insertamos.
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            predicate: #Predicate { $0.key == key }
+        )
+        if let existing = try? context.fetch(descriptor).first {
+            existing.value = value
+            existing.expiresAt = expiresAt
+            existing.updatedAt = Date()
+        } else {
+            let entry = LocalKeyValueEntry(key: key, value: value, expiresAt: expiresAt)
+            context.insert(entry)
+        }
+        try? context.save()
+    }
+
+    /// Lee el valor para una key. Devuelve `nil` si no existe o está expirado.
+    /// Limpia entradas expiradas lazy en cada `get`.
+    func getKeyValue(_ key: String) -> Data? {
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            predicate: #Predicate { $0.key == key }
+        )
+        guard let entry = try? context.fetch(descriptor).first else { return nil }
+        if entry.isExpired {
+            context.delete(entry)
+            try? context.save()
+            return nil
+        }
+        return entry.value
+    }
+
+    /// Elimina una entrada del store. No-op si la key no existe.
+    func removeKeyValue(_ key: String) {
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            predicate: #Predicate { $0.key == key }
+        )
+        if let entry = try? context.fetch(descriptor).first {
+            context.delete(entry)
+            try? context.save()
+        }
+    }
+
+    /// Lista todas las entradas (debug / inspección).
+    func allKeyValueEntries() -> [LocalKeyValueEntry] {
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
     }
 
     // MARK: - Queries
