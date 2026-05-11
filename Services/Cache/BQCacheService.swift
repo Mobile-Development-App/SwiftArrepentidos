@@ -119,8 +119,20 @@ actor BQCacheService {
 
     private func writeDiskEntry(key: BQCacheKey, entry: Entry) {
         let url = diskURL(for: key)
-        if let data = try? encoder.encode(entry) {
-            try? data.write(to: url, options: .atomic)
+
+        // FIX: Multithreading (GCD) — la escritura de la capa de disco va
+        // en `DispatchQueue.global(qos: .utility)`. La capa de memoria ya
+        // se actualizó en el actor; la persistencia en disco es
+        // best-effort y no debería bloquear al siguiente lector.
+        //
+        // El `entry` es value type (Codable struct) y se captura por valor,
+        // así que no cruzamos referencias mutables al thread del background.
+        DispatchQueue.global(qos: .utility).async {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            if let data = try? enc.encode(entry) {
+                try? data.write(to: url, options: .atomic)
+            }
         }
     }
 }

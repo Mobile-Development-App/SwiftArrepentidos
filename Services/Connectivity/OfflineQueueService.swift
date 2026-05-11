@@ -14,6 +14,25 @@ actor OfflineQueueService {
     private let decoder: JSONDecoder
     private let fileManager = FileManager.default
 
+    // FIX: Local Storage (UserDefaults) — metadata espejo de la cola
+    // accesible desde cualquier hilo sin hopear al actor. La UI usa esto
+    // para mostrar el badge "N pendientes" sin pagar `await`.
+    private static let depthKey = "offlineQueue.depth"
+    private static let lastDrainKey = "offlineQueue.lastDrainAt"
+
+    /// Cuántas operaciones quedaron pendientes en el último flush. Disponible
+    /// para SwiftUI desde cualquier @MainActor sin necesidad de awaitear al
+    /// actor. Útil para mostrar un badge tipo "⏳ 3 cambios pendientes".
+    nonisolated static var pendingDepthFromDefaults: Int {
+        UserDefaults.standard.integer(forKey: depthKey)
+    }
+
+    /// Timestamp del último `drain()` exitoso. `nil` si nunca se ha drenado.
+    nonisolated static var lastDrainAt: Date? {
+        let ts = UserDefaults.standard.double(forKey: lastDrainKey)
+        return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+    }
+
     private init() {
         encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
@@ -177,6 +196,11 @@ actor OfflineQueueService {
         items = remaining
         persist()
 
+        // FIX: Local Storage (UserDefaults) — timestamp del último drain
+        // exitoso. La pantalla de Debug lo muestra como "Última sincronización:
+        // hace N minutos" para auditar el comportamiento offline-first.
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastDrainKey)
+
         // Notifica a las view-models para que marquen los productos como
         // `.synced`. El payload es el array de productIds que sí drenaron.
         if !syncedProductIds.isEmpty {
@@ -207,15 +231,41 @@ actor OfflineQueueService {
     }
 
     private func persist() {
+        // Snapshot dentro del scope del actor — `items` es value type así
+        // que el array se copia por valor antes de cruzar el boundary del
+        // closure de GCD.
+        let snapshot = items
+        let depth = items.count
         let url = storageURL()
-        do {
-            let data = try encoder.encode(items)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            #if DEBUG
-            print("[OfflineQueue] persist failed: \(error)")
-            #endif
+
+        // FIX: Multithreading (GCD) — la I/O de disco corre en
+        // `DispatchQueue.global(qos: .utility)`. El actor ya serializa las
+        // mutaciones de `items`; este patrón asegura que el JSONEncoder y
+        // el `data.write` no bloqueen al actor mientras suceden, lo que
+        // permite que el siguiente `enqueue` se procese de inmediato.
+        //
+        // Diferencia con Task.detached:
+        //   • DispatchQueue.global usa el thread pool clásico de GCD (queue
+        //     compartido del sistema, no cooperativo de Swift Concurrency).
+        //   • Apropiado para fire-and-forget como persistencia best-effort,
+        //     donde no necesitamos el resultado.
+        DispatchQueue.global(qos: .utility).async {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            do {
+                let data = try enc.encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                #if DEBUG
+                print("[OfflineQueue] persist failed (background): \(error)")
+                #endif
+            }
         }
+
+        // FIX: Local Storage (UserDefaults) — mirror del depth para badges
+        // en la UI. UserDefaults es key/value persistente del sistema, ideal
+        // para metadata pequeña que cualquier vista lee sin `await`.
+        UserDefaults.standard.set(depth, forKey: Self.depthKey)
     }
 
     private func storageURL() -> URL {
