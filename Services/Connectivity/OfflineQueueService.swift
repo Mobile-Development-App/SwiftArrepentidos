@@ -14,6 +14,20 @@ actor OfflineQueueService {
     private let decoder: JSONDecoder
     private let fileManager = FileManager.default
 
+
+    private static let depthKey = "offlineQueue.depth"
+    private static let lastDrainKey = "offlineQueue.lastDrainAt"
+
+ 
+    nonisolated static var pendingDepthFromDefaults: Int {
+        UserDefaults.standard.integer(forKey: depthKey)
+    }
+
+    nonisolated static var lastDrainAt: Date? {
+        let ts = UserDefaults.standard.double(forKey: lastDrainKey)
+        return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+    }
+
     private init() {
         encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
@@ -25,8 +39,7 @@ actor OfflineQueueService {
 
     func enqueue(_ op: QueuedOperation) {
         loadIfNeeded()
-        // Coalescing en la entrada también: si llega un updateProduct y ya
-        // hay un createProduct pendiente para el mismo productId, mergeamos.
+
         if case .updateProduct(let pid, let newProduct, _) = op,
            let createIdx = items.firstIndex(where: {
                if case .createProduct(_, let p, _) = $0, p.id == pid { return true }
@@ -48,15 +61,6 @@ actor OfflineQueueService {
         #endif
     }
 
-    /// Aplica una edición sobre un producto que todavía no se sincronizó —
-    /// es decir, hay una `createProduct` pendiente para `productId`. En vez
-    /// de encolar una segunda operación (que daría 404 en el backend porque
-    /// el producto no existe aún), reemplazamos el `product` dentro de la
-    /// `createProduct` encolada para que cuando drene tenga ya los cambios.
-    ///
-    /// Caso esquinado: si por alguna razón no encontramos el create pendiente
-    /// (debería ser imposible pero igual), encolamos un updateProduct normal
-    /// como fallback — peor caso el backend falla y lo reintentamos.
     func coalesceEdit(productId: UUID, newProduct: Product) {
         loadIfNeeded()
         if let idx = items.firstIndex(where: {
@@ -84,12 +88,6 @@ actor OfflineQueueService {
         print("[OfflineQueue] coalesceEdit: no pending create found — fallback to updateProduct queue entry")
         #endif
     }
-
-    /// Si el usuario borra un producto que todavía está pendiente de
-    /// crearse, simplemente removemos la `createProduct` de la cola — no
-    /// tiene sentido crearlo en el backend para luego borrarlo.
-    /// Devuelve `true` si removió un create pendiente (caller no necesita
-    /// encolar un delete).
     func dropPendingCreate(productId: UUID) -> Bool {
         loadIfNeeded()
         let countBefore = items.count
@@ -177,8 +175,9 @@ actor OfflineQueueService {
         items = remaining
         persist()
 
-        // Notifica a las view-models para que marquen los productos como
-        // `.synced`. El payload es el array de productIds que sí drenaron.
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastDrainKey)
+
+       
         if !syncedProductIds.isEmpty {
             await MainActor.run {
                 NotificationCenter.default.post(
@@ -207,15 +206,24 @@ actor OfflineQueueService {
     }
 
     private func persist() {
+        let snapshot = items
+        let depth = items.count
         let url = storageURL()
-        do {
-            let data = try encoder.encode(items)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            #if DEBUG
-            print("[OfflineQueue] persist failed: \(error)")
-            #endif
+
+        DispatchQueue.global(qos: .utility).async {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            do {
+                let data = try enc.encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                #if DEBUG
+                print("[OfflineQueue] persist failed (background): \(error)")
+                #endif
+            }
         }
+
+        UserDefaults.standard.set(depth, forKey: Self.depthKey)
     }
 
     private func storageURL() -> URL {

@@ -25,7 +25,6 @@ actor BQCacheService {
         let writtenAt: Date
     }
 
-    //dictionary + access-order array
     private var memory: [String: Entry] = [:]
     private var order: [String] = []
     private let capacity = 32
@@ -56,7 +55,6 @@ actor BQCacheService {
         return nil
     }
 
-    ///stores value under `key`
     func put<T: Encodable>(_ value: T, for key: BQCacheKey, ttl: TimeInterval? = nil) async {
         let effectiveTTL = ttl ?? Self.defaultTTL[key] ?? 300
         guard let data = try? encoder.encode(value) else { return }
@@ -71,7 +69,6 @@ actor BQCacheService {
         writeDiskEntry(key: key, entry: entry)
     }
 
-    ///drops both layers for key. Used on data mutations
     func remove(_ key: BQCacheKey) {
         invalidate(key.rawValue)
         try? fileManager.removeItem(at: diskURL(for: key))
@@ -119,8 +116,14 @@ actor BQCacheService {
 
     private func writeDiskEntry(key: BQCacheKey, entry: Entry) {
         let url = diskURL(for: key)
-        if let data = try? encoder.encode(entry) {
-            try? data.write(to: url, options: .atomic)
+
+
+        DispatchQueue.global(qos: .utility).async {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            if let data = try? enc.encode(entry) {
+                try? data.write(to: url, options: .atomic)
+            }
         }
     }
 }
