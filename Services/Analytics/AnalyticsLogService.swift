@@ -25,6 +25,17 @@ actor AnalyticsLogService {
             events.removeFirst(events.count - maxEvents / 2)
         }
         persist()
+
+        let kindRaw = event.kind.rawValue
+        let attrs = event.attributes
+        let ts = event.timestamp
+        Task { @MainActor in
+            LocalDatabaseService.shared.insertAnalyticsEvent(
+                kind: kindRaw,
+                attributes: attrs,
+                timestamp: ts
+            )
+        }
     }
 
     func record(kind: AnalyticsEvent.Kind, attributes: [String: String] = [:]) {
