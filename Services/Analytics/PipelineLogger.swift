@@ -42,16 +42,37 @@ actor PipelineLogger {
     func end(_ token: Token) {
         loadIfNeeded()
         let ms = Date().timeIntervalSince(token.start) * 1000
-        samples.append(LatencySample(stage: token.stage, durationMs: ms, timestamp: Date()))
+        let now = Date()
+        samples.append(LatencySample(stage: token.stage, durationMs: ms, timestamp: now))
         if samples.count > cap { samples.removeFirst(samples.count - cap / 2) }
         persist()
+
+
+        let stage = token.stage.rawValue
+        Task { @MainActor in
+            LocalDatabaseService.shared.insertPipelineLatency(
+                stage: stage,
+                durationMs: ms,
+                timestamp: now
+            )
+        }
     }
 
     func recordExternal(stage: LatencySample.Stage, durationMs: Double) {
         loadIfNeeded()
-        samples.append(LatencySample(stage: stage, durationMs: durationMs, timestamp: Date()))
+        let now = Date()
+        samples.append(LatencySample(stage: stage, durationMs: durationMs, timestamp: now))
         if samples.count > cap { samples.removeFirst(samples.count - cap / 2) }
         persist()
+
+        let stageRaw = stage.rawValue
+        Task { @MainActor in
+            LocalDatabaseService.shared.insertPipelineLatency(
+                stage: stageRaw,
+                durationMs: durationMs,
+                timestamp: now
+            )
+        }
     }
 
     func recentSamples(within days: Int = 30) -> [LatencySample] {
