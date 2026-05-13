@@ -13,13 +13,6 @@ actor RestockCycleStore {
     private let decoder: JSONDecoder
     private let fileManager = FileManager.default
 
-    // FIX: Multithreading (AsyncSequence) — stream de ciclos a medida que
-    // se registran. Permite a `InventoryInsightsViewModel` reaccionar con
-    // `for await cycle in RestockCycleStore.shared.cycleEvents` y
-    // refrescar la BQ3 sin tener que hacer polling.
-    //
-    // `nonisolated` para que SwiftUI consumers puedan acceder sin hopear
-    // dentro del actor — la `Continuation` es thread-safe por sí misma.
     nonisolated let cycleEvents: AsyncStream<RestockCycle>
     private nonisolated let cycleEventsContinuation: AsyncStream<RestockCycle>.Continuation
 
@@ -43,6 +36,19 @@ actor RestockCycleStore {
         // FIX: AsyncSequence — emite el evento al stream para que cualquier
         // observador (BQ3 ViewModel, dashboards) reaccione en tiempo real.
         cycleEventsContinuation.yield(cycle)
+
+        let pid = cycle.productId
+        let pname = cycle.productName
+        let outAt = cycle.outOfStockAt
+        let inAt = cycle.restockedAt
+        Task { @MainActor in
+            LocalDatabaseService.shared.insertRestockCycle(
+                productId: pid,
+                productName: pname,
+                outOfStockAt: outAt,
+                restockedAt: inAt
+            )
+        }
     }
 
     func allCycles() -> [RestockCycle] {
@@ -67,19 +73,6 @@ actor RestockCycleStore {
         loadIfNeeded()
         guard cycles.isEmpty, !products.isEmpty else { return }
 
-        // FIX: Multithreading (GCD) — el backfill genera 2-4 ciclos por
-        // producto y, con catálogos grandes, fácilmente entra en ~500
-        // entradas. Ejecutamos la generación en `DispatchQueue.global(qos: .utility)`
-        // para no bloquear el caller (que viene de @MainActor en
-        // `InventoryInsightsViewModel.refresh`).
-        //
-        // Diferencia explícita con Task.detached:
-        //   • Task.detached usa el cooperative thread pool de Swift.
-        //   • DispatchQueue.global(qos:) es GCD puro, el sistema de
-        //     concurrencia clásico de iOS — todavía vigente y necesario
-        //     cuando interoperamos con APIs de Foundation que prefieren
-        //     callbacks. Aquí lo usamos para demostrar la integración
-        //     entre concurrency moderna (await) y GCD legacy.
         let generated: [RestockCycle] = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 var rng = SystemRandomNumberGenerator()

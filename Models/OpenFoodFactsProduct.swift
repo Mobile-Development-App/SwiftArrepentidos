@@ -51,7 +51,10 @@ struct OpenFoodFactsProductDTO: Decodable {
 /// Domain model for a product looked up via Open Food Facts.
 /// Used to pre-fill the Add Product form when a scanned barcode
 /// doesn't exist in our own backend.
-struct OpenFoodFactsProduct {
+///
+/// `Codable` para poder persistirlo via `LocalKeyValueStore` (BD llave-valor)
+/// y que el cache de barcodes sobreviva cold-starts.
+struct OpenFoodFactsProduct: Codable {
     let barcode: String
     let name: String
     let brand: String

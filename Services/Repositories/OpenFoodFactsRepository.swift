@@ -13,16 +13,7 @@ final class OpenFoodFactsRepository: OpenFoodFactsRepositoryProtocol {
     private let networkMonitor = NetworkMonitor.shared
     private let session: URLSession
 
-    // FIX: Caching — NSCache con countLimit y totalCostLimit explícitos.
-    //
-    // El usuario escanea el mismo barcode varias veces (por error, por
-    // demo, por edición del mismo producto). Sin caché, cada scan dispara
-    // un round-trip de ~200ms a Open Food Facts. Con NSCache:
-    //   • countLimit: 128 productos — cubre un día de scans en una tienda
-    //   • totalCostLimit: 2 MB — los DTOs son chicos (~1-3 KB cada uno),
-    //                            esto deja margen para imágenes embebidas
-    //   • NSCache responde a memory warnings del OS automáticamente
-    //   • thread-safe nativo, no necesitamos serializar manualmente
+
     private let lookupCache: NSCache<NSString, CachedOFFProduct> = {
         let cache = NSCache<NSString, CachedOFFProduct>()
         cache.countLimit = 128
@@ -40,14 +31,6 @@ final class OpenFoodFactsRepository: OpenFoodFactsRepositoryProtocol {
         self.session = session
     }
 
-    /// Looks up a product by its barcode.
-    /// - Returns: `OpenFoodFactsProduct` if found, `nil` if the barcode is not in the database.
-    /// - Throws: `APIError.offline` if there's no network,
-    ///           `APIError.invalidURL` if the URL cannot be built,
-    ///           `APIError.networkError` on request failure,
-    ///           `APIError.invalidResponse` if the response is not HTTP,
-    ///           `APIError.serverError` on non-2xx status codes,
-    ///           `APIError.decodingError` on malformed responses.
     func lookup(barcode: String) async throws -> OpenFoodFactsProduct? {
         // Validación: solo dígitos, máx 32 chars (previene URL injection)
         let trimmed = barcode.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,13 +40,24 @@ final class OpenFoodFactsRepository: OpenFoodFactsRepositoryProtocol {
             throw APIError.invalidURL
         }
 
-        // FIX: Caching — chequeo de caché ANTES del network. Esto cubre el
-        // modo offline si ya vimos el barcode antes (TTL 24h), y elimina
-        // ~200ms de latencia + un round-trip por scan repetido.
+        // FIX: Caching — chequeo de caché L1 (in-memory) ANTES del network.
+        // Cubre re-scans dentro de la misma sesión sin hopear más allá.
         let key = trimmed as NSString
         if let cached = lookupCache.object(forKey: key),
            Date().timeIntervalSince(cached.cachedAt) < cacheTTL {
             return cached.product
+        }
+
+
+        let kvKey = "openFoodFacts.\(trimmed)"
+        if let stored: OpenFoodFactsProduct = await MainActor.run(
+            body: { LocalKeyValueStore.shared.get(kvKey, as: OpenFoodFactsProduct.self) }
+        ) {
+            // Hidratamos también L1 para que el siguiente lookup en sesión
+            // sea instantáneo.
+            let boxed = CachedOFFProduct(product: stored, cachedAt: Date())
+            lookupCache.setObject(boxed, forKey: key, cost: 1024)
+            return stored
         }
 
         guard networkMonitor.isConnected else {
@@ -115,11 +109,13 @@ final class OpenFoodFactsRepository: OpenFoodFactsRepositoryProtocol {
             }
             let product = productDTO.toDomain(barcode: trimmed)
 
-            // FIX: Caching — guardamos en NSCache con cost = tamaño del JSON
-            // crudo. Eso permite que `totalCostLimit` haga eviction inteligente
-            // basada en memoria real ocupada, no sólo en número de entradas.
             let boxed = CachedOFFProduct(product: product, cachedAt: Date())
             lookupCache.setObject(boxed, forKey: key, cost: data.count)
+
+            let kvKey = "openFoodFacts.\(trimmed)"
+            await MainActor.run {
+                LocalKeyValueStore.shared.set(product, for: kvKey, ttl: cacheTTL)
+            }
 
             return product
         } catch {

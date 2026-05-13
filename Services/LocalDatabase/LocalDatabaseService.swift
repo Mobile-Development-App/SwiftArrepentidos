@@ -2,34 +2,6 @@ import Foundation
 import SwiftData
 import SwiftUI
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LocalDatabaseService — fachada del store relacional local (SwiftData / SQLite).
-//
-// ## Por qué existe
-// La rúbrica de Sprint 3 categoriza Local Storage en cuatro estrategias:
-//   1. BD Local Relacional (10 pts)  ← este servicio
-//   2. BD Llave/Valor                 ← BQCacheService
-//   3. Archivos Locales               ← PersistenceService, OfflineQueueService…
-//   4. Preferences/UserDefaults/Keychain ← SettingsViewModel, Auth entitlement
-//
-// Hasta esta iteración el repo cubría 2-4. Esta clase introduce 1 sin
-// reemplazar lo existente: persistencia "dual-write" — el origen de verdad
-// para offline sigue siendo el JSON en `Application Support`, pero cada audit
-// y cada usage-event se replica también a SwiftData para que sea consultable
-// con `@Query` y predicados.
-//
-// ## Esquema
-//   UserSession ──┬── AuditLogEntry      (1-N, cascade)
-//                 └── UsageEventRecord    (1-N, cascade)
-// `UserSession` se crea perezosamente: la primera escritura tras un login
-// que no tenga sesión activa la abre. `userDidLogout` la cierra y la limpia.
-//
-// ## Concurrencia
-// Toda la API es `@MainActor`. Los callers en background (ej. el actor
-// `UsageTrackingService`) hacen `Task { @MainActor in … }` para hopear; el
-// volumen es bajo (eventos puntuales) así que no necesitamos un context
-// dedicado en background.
-// ─────────────────────────────────────────────────────────────────────────────
 
 @MainActor
 final class LocalDatabaseService: ObservableObject {
@@ -44,10 +16,16 @@ final class LocalDatabaseService: ObservableObject {
     private var logoutObserver: NSObjectProtocol?
 
     private init() {
+
         let schema = Schema([
             UserSession.self,
             AuditLogEntry.self,
-            UsageEventRecord.self
+            UsageEventRecord.self,
+            PipelineLatencySample.self,
+            AnalyticsEventSample.self,
+            LocalKeyValueEntry.self,
+            RestockCycleEntry.self,
+            ExpirationAdviceEntry.self
         ])
         let config = ModelConfiguration(
             schema: schema,
@@ -87,15 +65,26 @@ final class LocalDatabaseService: ObservableObject {
         }
     }
 
-    /// Llamada una vez por cold-start desde `InventarIAApp.init`. Inserta un
-    /// audit `AppLaunched` para que la BD nunca se vea vacía en el demo y
-    /// para que tengamos un marcador de cada inicio de sesión de la app.
     func bootstrapLaunchEvent() {
         insertAudit(
             action: "AppLaunched",
             entityType: "System",
             details: "Cold-start de la app — bootstrap del store relacional"
         )
+
+        // Triggers dual-write desde los actors de Santiago. Los `Task` los
+        // crea cada servicio internamente; nosotros sólo invocamos su API.
+        Task {
+            await PipelineLogger.shared.recordExternal(stage: .ingestion, durationMs: 0)
+            await AnalyticsLogService.shared.record(
+                kind: .featureAccessed,
+                attributes: ["feature": "AppLaunch"]
+            )
+        }
+
+        // KV store directo (no async, ya estamos en @MainActor).
+        let now = Date()
+        LocalKeyValueStore.shared.set(now, for: "lastLaunchAt", ttl: 7 * 86_400)
     }
 
     // MARK: - Session lifecycle
@@ -152,6 +141,130 @@ final class LocalDatabaseService: ObservableObject {
         )
         context.insert(record)
         try? context.save()
+    }
+
+    // MARK: - Inserts (Santiago — telemetría del pipeline analítico)
+
+    func insertPipelineLatency(stage: String,
+                               durationMs: Double,
+                               timestamp: Date = Date()) {
+        let sample = PipelineLatencySample(
+            stage: stage,
+            durationMs: durationMs,
+            timestamp: timestamp
+        )
+        context.insert(sample)
+        try? context.save()
+    }
+
+    /// Persistencia relacional para los eventos analíticos que normalmente
+    /// `AnalyticsLogService` guarda en JSON. Misma estrategia dual-write.
+    func insertAnalyticsEvent(kind: String,
+                              attributes: [String: String],
+                              timestamp: Date = Date()) {
+        let json = encodeAttributes(attributes)
+        let sample = AnalyticsEventSample(
+            kind: kind,
+            timestamp: timestamp,
+            attributesJSON: json
+        )
+        context.insert(sample)
+        try? context.save()
+    }
+
+    // MARK: - Inserts (Angel — BQ3 y BQ4 relacional)
+
+    func insertRestockCycle(productId: UUID,
+                            productName: String,
+                            outOfStockAt: Date,
+                            restockedAt: Date) {
+        let entry = RestockCycleEntry(
+            productId: productId,
+            productName: productName,
+            outOfStockAt: outOfStockAt,
+            restockedAt: restockedAt
+        )
+        context.insert(entry)
+        try? context.save()
+    }
+
+    func insertExpirationAdvice(productId: UUID,
+                                productName: String,
+                                category: String,
+                                quantity: Int,
+                                daysRemaining: Int,
+                                urgency: String,
+                                action: String,
+                                rationale: String,
+                                computedAt: Date = Date()) {
+        let entry = ExpirationAdviceEntry(
+            productId: productId,
+            productName: productName,
+            category: category,
+            quantity: quantity,
+            daysRemaining: daysRemaining,
+            urgency: urgency,
+            action: action,
+            rationale: rationale,
+            computedAt: computedAt
+        )
+        context.insert(entry)
+        try? context.save()
+    }
+
+    // MARK: - Key-Value store (Santiago — BD llave-valor)
+
+    /// Inserta o actualiza el par `key → value` con TTL opcional.
+    /// Equivalente al `put` de Realm/Hive, con upsert atómico.
+    func setKeyValue(_ value: Data, for key: String, ttl: TimeInterval? = nil) {
+        let expiresAt: Date? = ttl.map { Date().addingTimeInterval($0) }
+        // Upsert: si la key existe, actualizamos; si no, insertamos.
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            predicate: #Predicate { $0.key == key }
+        )
+        if let existing = try? context.fetch(descriptor).first {
+            existing.value = value
+            existing.expiresAt = expiresAt
+            existing.updatedAt = Date()
+        } else {
+            let entry = LocalKeyValueEntry(key: key, value: value, expiresAt: expiresAt)
+            context.insert(entry)
+        }
+        try? context.save()
+    }
+
+    /// Lee el valor para una key. Devuelve `nil` si no existe o está expirado.
+    /// Limpia entradas expiradas lazy en cada `get`.
+    func getKeyValue(_ key: String) -> Data? {
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            predicate: #Predicate { $0.key == key }
+        )
+        guard let entry = try? context.fetch(descriptor).first else { return nil }
+        if entry.isExpired {
+            context.delete(entry)
+            try? context.save()
+            return nil
+        }
+        return entry.value
+    }
+
+    /// Elimina una entrada del store. No-op si la key no existe.
+    func removeKeyValue(_ key: String) {
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            predicate: #Predicate { $0.key == key }
+        )
+        if let entry = try? context.fetch(descriptor).first {
+            context.delete(entry)
+            try? context.save()
+        }
+    }
+
+    /// Lista todas las entradas (debug / inspección).
+    func allKeyValueEntries() -> [LocalKeyValueEntry] {
+        let descriptor = FetchDescriptor<LocalKeyValueEntry>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
     }
 
     // MARK: - Queries
