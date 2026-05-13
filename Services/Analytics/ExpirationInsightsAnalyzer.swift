@@ -38,11 +38,29 @@ final class ExpirationInsightsAnalyzer {
         let totalAtRisk = advice.count
         let totalUnits = advice.reduce(0) { $0 + $1.quantity }
 
+        let computedAt = Date()
+        let snapshot = advice
+        Task { @MainActor in
+            for a in snapshot {
+                LocalDatabaseService.shared.insertExpirationAdvice(
+                    productId: a.productId,
+                    productName: a.productName,
+                    category: a.category.rawValue,
+                    quantity: a.quantity,
+                    daysRemaining: a.daysRemaining,
+                    urgency: a.urgency.rawValue,
+                    action: a.action.rawValue,
+                    rationale: a.rationale,
+                    computedAt: computedAt
+                )
+            }
+        }
+
         return ExpirationInsightsDashboard(
             byUrgency: byUrgency,
             totalAtRisk: totalAtRisk,
             totalUnitsAtRisk: totalUnits,
-            computedAt: Date(),
+            computedAt: computedAt,
             durationMs: Date().timeIntervalSince(start) * 1000
         )
     }
