@@ -5,16 +5,9 @@ protocol AuthRepositoryProtocol {
     func login(email: String, password: String) async throws -> User
     func signUp(email: String, password: String, name: String, storeName: String, storeAddress: String?, storePhone: String?) async throws -> User
     func sendPasswordReset(email: String) async throws
-    func signInWithOAuth(providerID: String) async throws -> User
     func logout() throws
     func refreshToken() async throws -> String
     func getCurrentFirebaseUser() -> FirebaseAuth.User?
-}
-
-/// OAuth providers soportados (IDs de Firebase Auth)
-enum OAuthProviderID {
-    static let google = "google.com"
-    static let microsoft = "microsoft.com"
 }
 
 final class AuthRepository: AuthRepositoryProtocol {
@@ -127,129 +120,6 @@ final class AuthRepository: AuthRepositoryProtocol {
 
     func sendPasswordReset(email: String) async throws {
         try await Auth.auth().sendPasswordReset(withEmail: email)
-    }
-
-    /// Sign in using Google or Microsoft via Firebase OAuth.
-    /// Uses ASWebAuthenticationSession (no native SDKs needed).
-    /// Requires the provider to be enabled in Firebase Console.
-    ///
-    /// **Requisito de config:** el `GoogleService-Info.plist` debe contener
-    /// `REVERSED_CLIENT_ID` y el `Info.plist` debe declararlo en
-    /// `CFBundleURLTypes`. Sin eso, ASWebAuthenticationSession abre el
-    /// browser pero NO puede regresar a la app, dejando el flujo colgado.
-    /// Si el plist actual no tiene `REVERSED_CLIENT_ID`, hay que descargar
-    /// uno nuevo del Firebase Console DESPUÉS de habilitar Google Sign-In.
-    @MainActor
-    func signInWithOAuth(providerID: String) async throws -> User {
-        // Pre-flight de conectividad. Sin esto Firebase abre el browser
-        // y se cuelga sin feedback al usuario.
-        guard NetworkMonitor.shared.isConnected else {
-            throw APIError.offline
-        }
-
-        let provider = OAuthProvider(providerID: providerID)
-
-        switch providerID {
-        case OAuthProviderID.google:
-            provider.scopes = ["profile", "email"]
-        case OAuthProviderID.microsoft:
-            provider.customParameters = [
-                "tenant": "common",          // acepta cuentas personales y de organización
-                "prompt": "select_account"   // muestra selector de cuenta cada vez
-            ]
-            provider.scopes = ["openid", "email", "profile"]
-        default: break
-        }
-
-        // Firebase abre ASWebAuthenticationSession automáticamente cuando uiDelegate es nil en iOS 13+.
-        // El `withCheckedThrowingContinuation` blinda contra el caso de
-        // doble-resume (que ocurría cuando el flujo OAuth fallaba a mitad
-        // de camino — y crasheaba la app). Marcamos `didResume` para
-        // garantizar exactly-once.
-        let credential: AuthCredential = try await withCheckedThrowingContinuation { continuation in
-            var didResume = false
-            provider.getCredentialWith(nil) { credential, error in
-                guard !didResume else { return }
-                didResume = true
-                if let error = error {
-                    continuation.resume(throwing: error)
-                } else if let credential = credential {
-                    continuation.resume(returning: credential)
-                } else {
-                    continuation.resume(throwing: APIError.unknown("OAuth no devolvió credencial — revisa la configuración de URL scheme."))
-                }
-            }
-        }
-
-        let authResult = try await Auth.auth().signIn(with: credential)
-        let firebaseUser = authResult.user
-        let idToken = try await firebaseUser.getIDToken()
-        apiClient.setAuthToken(idToken)
-
-        // Intentar /auth/login con el uid
-        let authResponse: AuthResponseDTO
-        do {
-            authResponse = try await apiClient.request(
-                .authLogin,
-                method: .POST,
-                body: ["uid": firebaseUser.uid]
-            )
-        } catch {
-            // Usuario OAuth nuevo — no tiene store aún. Auto-provisionar vía /auth/oauth-register.
-            let name = firebaseUser.displayName ?? "Usuario"
-            let email = firebaseUser.email ?? ""
-
-            guard !email.isEmpty else {
-                try? Auth.auth().signOut()
-                apiClient.clearAuthToken()
-                throw APIError.unknown("No se pudo obtener tu email del proveedor OAuth.")
-            }
-
-            #if DEBUG
-            print("[AuthRepo] OAuth user nuevo — auto-registrando vía /auth/oauth-register")
-            #endif
-
-            do {
-                authResponse = try await apiClient.request(
-                    .authOAuthRegister,
-                    method: .POST,
-                    body: [
-                        "uid": firebaseUser.uid,
-                        "email": email,
-                        "name": name,
-                        "storeName": "Tienda de \(name)"
-                    ]
-                )
-                #if DEBUG
-                print("[AuthRepo] OAuth register success: storeId=\(authResponse.storeId)")
-                #endif
-            } catch {
-                // Falló auto-registro — sign out y reportar
-                try? Auth.auth().signOut()
-                apiClient.clearAuthToken()
-                throw APIError.unknown("No se pudo crear tu cuenta. Intenta de nuevo en unos segundos.")
-            }
-        }
-
-        let storeIdString = authResponse.storeId
-        APIConfig.storeId = storeIdString
-        UserDefaults.standard.set(firebaseUser.uid, forKey: "firebaseUid")
-        UserDefaults.standard.set(storeIdString, forKey: "currentStoreId")
-
-        let user = User(
-            id: UUID(deterministicFrom: authResponse.uid),
-            fullName: authResponse.name,
-            email: authResponse.email,
-            phone: firebaseUser.phoneNumber ?? "",
-            role: UserRole.fromBackend(authResponse.role),
-            storeName: "",
-            storeId: UUID(deterministicFrom: storeIdString),
-            avatarURL: firebaseUser.photoURL?.absoluteString,
-            joinDate: Date(),
-            isActive: true
-        )
-        cache.saveUser(user)
-        return user
     }
 
     func logout() throws {
