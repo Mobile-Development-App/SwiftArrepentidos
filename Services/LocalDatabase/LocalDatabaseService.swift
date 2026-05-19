@@ -25,7 +25,10 @@ final class LocalDatabaseService: ObservableObject {
             AnalyticsEventSample.self,
             LocalKeyValueEntry.self,
             RestockCycleEntry.self,
-            ExpirationAdviceEntry.self
+            ExpirationAdviceEntry.self,
+            // Sprint 4 — Conteo Físico de Inventario (Juan Felipe)
+            StockCountSessionEntry.self,
+            StockCountItemEntry.self
         ])
         let config = ModelConfiguration(
             schema: schema,
@@ -210,6 +213,81 @@ final class LocalDatabaseService: ObservableObject {
         )
         context.insert(entry)
         try? context.save()
+    }
+
+    // MARK: - Stock Count (Sprint 4 — Conteo Físico, Juan Felipe)
+
+    /// Crea una sesión de conteo nueva con sus renglones (uno por producto)
+    /// y la devuelve. Los renglones arrancan sin `countedQuantity`.
+    @discardableResult
+    func createStockCountSession(items: [StockCountItem]) -> StockCountSessionEntry {
+        let session = StockCountSessionEntry()
+        context.insert(session)
+        for item in items {
+            let entry = StockCountItemEntry(
+                productId: item.productId,
+                productName: item.productName,
+                categoryRaw: item.category.rawValue,
+                systemQuantity: item.systemQuantity,
+                countedQuantity: item.countedQuantity,
+                costPrice: item.costPrice,
+                session: session
+            )
+            context.insert(entry)
+        }
+        try? context.save()
+        return session
+    }
+
+    /// Devuelve la sesión de conteo en progreso, si existe. Permite retomar
+    /// un conteo que quedó a medias tras cerrar la app.
+    func activeStockCountSession() -> StockCountSessionEntry? {
+        let target = StockCountStatus.inProgress.rawValue
+        let predicate = #Predicate<StockCountSessionEntry> { $0.statusRaw == target }
+        var descriptor = FetchDescriptor<StockCountSessionEntry>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return (try? context.fetch(descriptor))?.first
+    }
+
+    /// Registra la cantidad contada para un renglón puntual y persiste.
+    func recordCountedQuantity(itemId: UUID, quantity: Int) {
+        let predicate = #Predicate<StockCountItemEntry> { $0.id == itemId }
+        let descriptor = FetchDescriptor<StockCountItemEntry>(predicate: predicate)
+        guard let entry = (try? context.fetch(descriptor))?.first else { return }
+        entry.countedQuantity = quantity
+        try? context.save()
+    }
+
+    /// Marca una sesión como completada.
+    func finishStockCountSession(sessionId: UUID) {
+        let predicate = #Predicate<StockCountSessionEntry> { $0.id == sessionId }
+        let descriptor = FetchDescriptor<StockCountSessionEntry>(predicate: predicate)
+        guard let session = (try? context.fetch(descriptor))?.first else { return }
+        session.statusRaw = StockCountStatus.completed.rawValue
+        session.finishedAt = Date()
+        try? context.save()
+    }
+
+    /// Todas las sesiones de conteo, más recientes primero. Lo usa BQ9.
+    func allStockCountSessions() -> [StockCountSessionEntry] {
+        let descriptor = FetchDescriptor<StockCountSessionEntry>(
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    /// Sesiones completadas — fuente de BQ9 (exactitud de inventario).
+    func completedStockCountSessions() -> [StockCountSessionEntry] {
+        let target = StockCountStatus.completed.rawValue
+        let predicate = #Predicate<StockCountSessionEntry> { $0.statusRaw == target }
+        let descriptor = FetchDescriptor<StockCountSessionEntry>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
     }
 
     // MARK: - Key-Value store (Santiago — BD llave-valor)

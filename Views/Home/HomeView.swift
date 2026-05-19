@@ -9,6 +9,8 @@ struct HomeView: View {
     @State private var showAddProduct = false
     @State private var showSettings = false
     @State private var showScanFromHome = false
+    // Sprint 4 — entradas a las features nuevas
+    @State private var showStockCount = false
 
     @Environment(\.colorScheme) var colorScheme
 
@@ -21,6 +23,7 @@ struct HomeView: View {
                     salesChart
                     alertsSection
                     quickActions
+                    toolsSection
                     Spacer().frame(height: 80)
                 }
                 .padding(.horizontal, 16)
@@ -64,6 +67,7 @@ struct HomeView: View {
             .sheet(isPresented: $showAddProduct) { AddProductView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .fullScreenCover(isPresented: $showScanFromHome) { ScanView() }
+            .sheet(isPresented: $showStockCount) { StockCountView() }
         }
     }
 
@@ -193,6 +197,18 @@ struct HomeView: View {
                 }
                 quickActionButton(icon: "plus.circle.fill", title: "Agregar Producto", color: AppColors.teaGreen) {
                     showAddProduct = true
+                }
+            }
+        }
+    }
+
+    // MARK: - Tools Section (Sprint 4 features)
+    private var toolsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Herramientas").font(AppTypography.headlineFont)
+            HStack(spacing: 12) {
+                quickActionButton(icon: "checklist", title: "Conteo Físico", color: AppColors.freshSky) {
+                    showStockCount = true
                 }
             }
         }

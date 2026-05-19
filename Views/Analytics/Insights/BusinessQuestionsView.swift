@@ -14,6 +14,7 @@ struct BusinessQuestionsView: View {
     @StateObject private var viewModel = BusinessQuestionsViewModel()
     @StateObject private var sprint3VM = Sprint3BQsViewModel()
     @StateObject private var insightsVM = InventoryInsightsViewModel()
+    @StateObject private var sprint4VM = Sprint4BQsViewModel()
     @ObservedObject private var network = NetworkMonitor.shared
 
     var body: some View {
@@ -53,6 +54,12 @@ struct BusinessQuestionsView: View {
                     dashboard: insightsVM.expirationDashboard,
                     isLoading: insightsVM.isLoadingExpiration
                 )
+                // Sprint 4 — BQ9 (Juan Felipe)
+                StockAccuracyCard(
+                    summary: sprint4VM.stockAccuracy,
+                    sessionsAnalyzed: sprint4VM.sessionsAnalyzed,
+                    isLoading: sprint4VM.isLoading
+                )
                 Spacer().frame(height: 40)
             }
             .padding(.horizontal, 16)
@@ -75,6 +82,7 @@ struct BusinessQuestionsView: View {
         )
         await sprint3VM.refresh()
         await insightsVM.refresh(products: inventoryViewModel.products)
+        await sprint4VM.refresh()
         // BQ8
         await AnalyticsLogService.shared.record(
             kind: .featureAccessed,
