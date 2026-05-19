@@ -142,32 +142,6 @@ struct LoginView: View {
                         }
                         .buttonStyle(PrimaryButtonStyle())
                         .disabled(!authViewModel.isLoginValid || authViewModel.isLoggingIn)
-
-                        // Divider "o continúa con"
-                        HStack {
-                            Rectangle()
-                                .fill(AppColors.border.opacity(0.5))
-                                .frame(height: 1)
-                            Text("o continúa con")
-                                .font(AppTypography.caption2Font)
-                                .foregroundColor(AppColors.textTertiary)
-                                .padding(.horizontal, 10)
-                            Rectangle()
-                                .fill(AppColors.border.opacity(0.5))
-                                .frame(height: 1)
-                        }
-                        .padding(.vertical, 4)
-
-                        // OAuth buttons — solo Google (Microsoft/Outlook requiere Azure AD config)
-                        oauthButton(
-                            title: "Continuar con Google",
-                            iconSystemName: "g.circle.fill",
-                            iconColor: Color(red: 0.95, green: 0.28, blue: 0.26),
-                            action: {
-                                hideKeyboard()
-                                authViewModel.signInWithGoogle()
-                            }
-                        )
                     }
                     .padding(.horizontal, 24)
 
@@ -212,27 +186,4 @@ struct LoginView: View {
         .padding(.horizontal, 4)
     }
 
-    /// Botón reutilizable para login con proveedores OAuth
-    private func oauthButton(title: String, iconSystemName: String, iconColor: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: iconSystemName)
-                    .font(.system(size: 20))
-                    .foregroundColor(iconColor)
-                Text(title)
-                    .font(AppTypography.calloutFont)
-                    .fontWeight(.medium)
-                    .foregroundColor(colorScheme == .dark ? AppColors.darkTextPrimary : AppColors.textPrimary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(colorScheme == .dark ? AppColors.darkSurface : AppColors.surface)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-        .disabled(authViewModel.isLoggingIn)
-    }
 }
