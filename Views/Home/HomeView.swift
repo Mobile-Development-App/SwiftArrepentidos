@@ -9,7 +9,10 @@ struct HomeView: View {
     @State private var showAddProduct = false
     @State private var showSettings = false
     @State private var showScanFromHome = false
+    // Sprint 4 — entradas a las features nuevas
     @State private var showStockCount = false
+    @State private var showWasteTracking = false
+    @State private var showPurchaseOrders = false
 
     @Environment(\.colorScheme) var colorScheme
 
@@ -67,6 +70,8 @@ struct HomeView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .fullScreenCover(isPresented: $showScanFromHome) { ScanView() }
             .sheet(isPresented: $showStockCount) { StockCountView() }
+            .sheet(isPresented: $showWasteTracking) { WasteTrackingView() }
+            .sheet(isPresented: $showPurchaseOrders) { PurchaseOrdersView() }
         }
     }
 
@@ -186,6 +191,7 @@ struct HomeView: View {
         .cardStyle()
     }
 
+    // MARK: - Quick Actions
     private var quickActions: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Acciones Rapidas").font(AppTypography.headlineFont)
@@ -200,7 +206,7 @@ struct HomeView: View {
         }
     }
 
-    // Tools Section (Sprint 4 features)
+    // MARK: - Tools Section (Sprint 4 features)
     private var toolsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Herramientas").font(AppTypography.headlineFont)
@@ -208,6 +214,15 @@ struct HomeView: View {
                 quickActionButton(icon: "checklist", title: "Conteo Físico", color: AppColors.freshSky) {
                     showStockCount = true
                 }
+                quickActionButton(icon: "trash.fill", title: "Registro de Mermas", color: AppColors.warning) {
+                    showWasteTracking = true
+                }
+            }
+            HStack(spacing: 12) {
+                quickActionButton(icon: "doc.badge.plus", title: "Órdenes de Compra", color: AppColors.deepSpaceBlue) {
+                    showPurchaseOrders = true
+                }
+                Color.clear.frame(maxWidth: .infinity)
             }
         }
     }
