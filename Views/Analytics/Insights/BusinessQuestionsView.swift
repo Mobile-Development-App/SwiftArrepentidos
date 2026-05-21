@@ -1,12 +1,6 @@
 import SwiftUI
 import Charts
 
-/// Sprint 3 Business Questions dashboard (Juan Felipe).
-///
-///   • BQ2 — Inventory valuation per store
-///   • BQ6 — Peak hours at which the user adds products
-///
-
 struct BusinessQuestionsView: View {
     @EnvironmentObject private var inventoryViewModel: InventoryViewModel
     @EnvironmentObject private var storeViewModel: StoreViewModel
@@ -15,6 +9,8 @@ struct BusinessQuestionsView: View {
     @StateObject private var sprint3VM = Sprint3BQsViewModel()
     @StateObject private var insightsVM = InventoryInsightsViewModel()
     @StateObject private var sprint4VM = Sprint4BQsViewModel()
+    @StateObject private var wasteBQVM = WasteBQViewModel()
+    @StateObject private var supplierBQVM = SupplierBQViewModel()
     @ObservedObject private var network = NetworkMonitor.shared
 
     var body: some View {
@@ -60,6 +56,16 @@ struct BusinessQuestionsView: View {
                     sessionsAnalyzed: sprint4VM.sessionsAnalyzed,
                     isLoading: sprint4VM.isLoading
                 )
+                // Sprint 4 — BQ10 (Santiago)
+                WasteReportCard(
+                    report: wasteBQVM.report,
+                    isLoading: wasteBQVM.isLoading
+                )
+                // Sprint 4 — BQ11 (Angel)
+                SupplierPerformanceCard(
+                    report: supplierBQVM.report,
+                    isLoading: supplierBQVM.isLoading
+                )
                 Spacer().frame(height: 40)
             }
             .padding(.horizontal, 16)
@@ -83,6 +89,8 @@ struct BusinessQuestionsView: View {
         await sprint3VM.refresh()
         await insightsVM.refresh(products: inventoryViewModel.products)
         await sprint4VM.refresh()
+        await wasteBQVM.refresh()
+        await supplierBQVM.refresh()
         // BQ8
         await AnalyticsLogService.shared.record(
             kind: .featureAccessed,
