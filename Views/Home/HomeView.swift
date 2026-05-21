@@ -9,7 +9,6 @@ struct HomeView: View {
     @State private var showAddProduct = false
     @State private var showSettings = false
     @State private var showScanFromHome = false
-    // Sprint 4 — entradas a las features nuevas
     @State private var showStockCount = false
 
     @Environment(\.colorScheme) var colorScheme
@@ -187,7 +186,6 @@ struct HomeView: View {
         .cardStyle()
     }
 
-    // MARK: - Quick Actions
     private var quickActions: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Acciones Rapidas").font(AppTypography.headlineFont)
@@ -202,7 +200,7 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Tools Section (Sprint 4 features)
+    // Tools Section (Sprint 4 features)
     private var toolsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Herramientas").font(AppTypography.headlineFont)
