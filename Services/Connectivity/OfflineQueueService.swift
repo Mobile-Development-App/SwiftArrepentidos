@@ -120,6 +120,16 @@ actor OfflineQueueService {
         persist()
     }
 
+    /// Fuerza un drain inmediato de la cola. Idempotente: si ya hay un drain
+    /// corriendo o la cola está vacía, retorna sin hacer nada. Pensado para
+    /// que la UI pueda reintentar explícitamente cuando vuelve la red,
+    /// como belt-and-suspenders del trigger automático por `onTransition`.
+    /// (El trigger automático puede llegar antes de que `NetworkMonitor`
+    /// publique el cambio, con lo que la primera pasada del replay falla.)
+    func flushNow() async {
+        await drain()
+    }
+
     struct ReplayHandlers {
         var createProduct: (Product) async throws -> Product
         var updateProduct: (UUID, Product) async throws -> Product
@@ -150,6 +160,45 @@ actor OfflineQueueService {
         print("[OfflineQueue] draining \(items.count) operation(s)")
         #endif
 
+        var syncedProductIds = await replayPass(handlers: handlers)
+
+        // Si quedaron operaciones tras la primera pasada (típicamente porque
+        // la red apenas se está estabilizando tras un toggle de modo avión y
+        // el guard de `ProductRepository` rebotó con `APIError.offline`),
+        // esperamos 2s y reintentamos UNA vez. Sin este retry el usuario
+        // tendría que hacer otra transición de red — o editar el producto
+        // a mano — para que se sincronice.
+        if !items.isEmpty {
+            #if DEBUG
+            print("[OfflineQueue] \(items.count) remaining after first pass — retrying in 2s")
+            #endif
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            let retryIds = await replayPass(handlers: handlers)
+            syncedProductIds.append(contentsOf: retryIds)
+        }
+
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastDrainKey)
+
+        // Snapshot inmutable antes de cruzar al MainActor: evita el warning
+        // "reference to captured var in concurrently-executing code" que en
+        // Swift 6 se convierte en error.
+        let idsToBroadcast = syncedProductIds
+        if !idsToBroadcast.isEmpty {
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .inventoryDidSync,
+                    object: nil,
+                    userInfo: ["syncedProductIds": idsToBroadcast]
+                )
+            }
+        }
+    }
+
+    /// Una pasada del replay sobre `items`. Mutación in-place de `items` con
+    /// las operaciones que quedan pendientes (fallidas). Devuelve los IDs
+    /// que sí lograron sincronizarse en esta pasada — el caller los acumula
+    /// para postear `.inventoryDidSync` al final.
+    private func replayPass(handlers: ReplayHandlers) async -> [UUID] {
         var remaining: [QueuedOperation] = []
         var syncedProductIds: [UUID] = []
         for op in items {
@@ -174,19 +223,7 @@ actor OfflineQueueService {
         }
         items = remaining
         persist()
-
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastDrainKey)
-
-       
-        if !syncedProductIds.isEmpty {
-            await MainActor.run {
-                NotificationCenter.default.post(
-                    name: .inventoryDidSync,
-                    object: nil,
-                    userInfo: ["syncedProductIds": syncedProductIds]
-                )
-            }
-        }
+        return syncedProductIds
     }
 
     private func loadIfNeeded() {

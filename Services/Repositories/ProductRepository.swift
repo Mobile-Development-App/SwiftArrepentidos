@@ -14,10 +14,17 @@ protocol ProductRepositoryProtocol {
 final class ProductRepository: ProductRepositoryProtocol {
     private let apiClient = APIClient.shared
     private let cache = PersistenceService.shared
-    private let networkMonitor = NetworkMonitor.shared
+    // Para el estado de conectividad usamos `ConnectivityService` (no
+    // `NetworkMonitor`) porque es el MISMO publisher que dispara el drain
+    // del `OfflineQueueService`. Tener dos `NWPathMonitor` independientes
+    // creaba una carrera offline→online: el drain ejecutaba el replay
+    // mientras `NetworkMonitor.isConnected` aún era `false`, el guard
+    // tiraba `APIError.offline`, y la op quedaba re-encolada sin reintento.
+    // Alineando ambas comprobaciones contra `ConnectivityService.isOnline`
+    // el replay ya no falsea-falla en la transición.
 
     func fetchProducts(search: String? = nil, category: String? = nil, stockStatus: String? = nil, limit: Int? = nil, cursor: String? = nil) async throws -> (products: [Product], nextCursor: String?) {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             return (cache.loadProducts(), nil)
         }
 
@@ -44,7 +51,7 @@ final class ProductRepository: ProductRepositoryProtocol {
     }
 
     func getProduct(id: String) async throws -> Product {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             if let cached = cache.loadProducts().first(where: { $0.id == UUID(deterministicFrom: id) }) {
                 return cached
             }
@@ -56,7 +63,7 @@ final class ProductRepository: ProductRepositoryProtocol {
     }
 
     func createProduct(_ product: Product) async throws -> Product {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             throw APIError.offline
         }
 
@@ -78,7 +85,7 @@ final class ProductRepository: ProductRepositoryProtocol {
     }
 
     func updateProduct(id: String, _ product: Product) async throws -> Product {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             throw APIError.offline
         }
 
@@ -102,7 +109,7 @@ final class ProductRepository: ProductRepositoryProtocol {
     }
 
     func deleteProduct(id: String) async throws {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             throw APIError.offline
         }
 
@@ -118,7 +125,7 @@ final class ProductRepository: ProductRepositoryProtocol {
     }
 
     func fetchLowStock() async throws -> [Product] {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             return cache.loadProducts().filter { $0.stockStatus == .lowStock }
         }
 
@@ -127,7 +134,7 @@ final class ProductRepository: ProductRepositoryProtocol {
     }
 
     func fetchOutOfStock() async throws -> [Product] {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             return cache.loadProducts().filter { $0.stockStatus == .outOfStock }
         }
 
@@ -136,7 +143,7 @@ final class ProductRepository: ProductRepositoryProtocol {
     }
 
     func fetchExpiringSoon(days: Int = 30) async throws -> [Product] {
-        guard networkMonitor.isConnected else {
+        guard ConnectivityService.shared.isOnline else {
             return cache.loadProducts().filter { $0.isExpiringSoon }
         }
 
