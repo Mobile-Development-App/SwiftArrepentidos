@@ -56,6 +56,7 @@ class InventoryViewModel: ObservableObject {
     private let networkMonitor = NetworkMonitor.shared
     private var logoutObserver: Any?
     private var syncObserver: Any?
+    private var cancellables: Set<AnyCancellable> = []
 
     enum StockFilter: String, CaseIterable {
         case all = "Todos"
@@ -95,6 +96,24 @@ class InventoryViewModel: ObservableObject {
             guard let ids = note.userInfo?["syncedProductIds"] as? [UUID] else { return }
             Task { @MainActor in self?.markProductsSynced(ids: ids) }
         }
+
+        // Belt-and-suspenders del auto-sync. `OfflineQueueService` ya escucha
+        // `onTransition` y dispara su propio `drain` apenas vuelve la red.
+        // Aquí agregamos un SEGUNDO trigger explícito 1.5s después de la
+        // transición, por si la primera pasada del replay falló y/o si la
+        // suscripción del store nunca llegó a configurarse (p.ej. después de
+        // un cold start con la cola ya cargada). `flushNow` es idempotente:
+        // si la cola está vacía, no hace nada.
+        ConnectivityService.shared.onTransition
+            .filter { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    await OfflineQueueService.shared.flushNow()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     deinit {
