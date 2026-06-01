@@ -15,57 +15,73 @@ struct BusinessQuestionsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
+            // Sprint 4 micro-optimization: `LazyVStack` en vez de `VStack` para
+            // que SwiftUI sólo evalúe el `body` de las cards visibles. Con 11
+            // cards la mitad queda fuera de pantalla en el primer render; antes
+            // se construían todas. El `.id(...)` por card estabiliza la
+            // identidad para el diffing al cambiar tamaños.
+            LazyVStack(spacing: 20) {
                 connectivityBanner
                 InventoryValuationCard(
                     snapshot: viewModel.valuation,
                     isLoading: viewModel.isLoadingValuation,
                     currencyFormatter: viewModel.currencyString
                 )
+                .id("bq2")
                 PeakActivityHoursCard(
                     summary: viewModel.peakActivity,
                     isLoading: viewModel.isLoadingPeak
                 )
+                .id("bq6")
                 PipelineLatencyCard(
                     summary: sprint3VM.latency,
                     isLoading: sprint3VM.isLoading
                 )
+                .id("bq7-latency")
                 PeakScreensCard(
                     summary: sprint3VM.peakScreens,
                     isLoading: sprint3VM.isLoading
                 )
+                .id("bq7-screens")
                 ScanAccuracyCard(
                     summary: sprint3VM.scanAccuracy,
                     isLoading: sprint3VM.isLoading
                 )
+                .id("bq7-scan")
                 FeatureUsageCard(
                     summary: sprint3VM.featureUsage,
                     isLoading: sprint3VM.isLoading
                 )
+                .id("bq8")
                 RestockCyclesCard(
                     dashboard: insightsVM.restockDashboard,
                     isLoading: insightsVM.isLoadingRestock
                 )
+                .id("bq5")
                 ExpirationActionCard(
                     dashboard: insightsVM.expirationDashboard,
                     isLoading: insightsVM.isLoadingExpiration
                 )
+                .id("bq4")
                 // Sprint 4 — BQ9 (Juan Felipe)
                 StockAccuracyCard(
                     summary: sprint4VM.stockAccuracy,
                     sessionsAnalyzed: sprint4VM.sessionsAnalyzed,
                     isLoading: sprint4VM.isLoading
                 )
+                .id("bq9")
                 // Sprint 4 — BQ10 (Santiago)
                 WasteReportCard(
                     report: wasteBQVM.report,
                     isLoading: wasteBQVM.isLoading
                 )
+                .id("bq10")
                 // Sprint 4 — BQ11 (Angel)
                 SupplierPerformanceCard(
                     report: supplierBQVM.report,
                     isLoading: supplierBQVM.isLoading
                 )
+                .id("bq11")
                 Spacer().frame(height: 40)
             }
             .padding(.horizontal, 16)
