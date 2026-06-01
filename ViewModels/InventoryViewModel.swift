@@ -58,6 +58,34 @@ class InventoryViewModel: ObservableObject {
     private var syncObserver: Any?
     private var cancellables: Set<AnyCancellable> = []
 
+    // MARK: - Sprint 4 micro-optimization: folded-string cache
+    //
+    // El search del catálogo llamaba `localizedCaseInsensitiveContains` 4
+    // veces por producto, por cada keystroke. Esa función hace folding
+    // case + diacritic en CADA invocación, y es la parte cara del filtro.
+    // Cacheamos la versión folded de los campos (name/sku/category.rawValue)
+    // por hashValue del string original; los productos rara vez cambian de
+    // nombre, así que los hits son muy altos en estado estable.
+    private var foldedCache: [Int: String] = [:]
+    private let foldedCacheCap = 1024
+
+    /// Devuelve la versión "case + diacritic insensitive" de `s`, cacheando
+    /// el resultado. Cap en 1024 entradas: si se excede, se vacía completo
+    /// (LRU sería overkill para este uso).
+    private func folded(_ s: String) -> String {
+        let key = s.hashValue
+        if let v = foldedCache[key] { return v }
+        if foldedCache.count >= foldedCacheCap {
+            foldedCache.removeAll(keepingCapacity: true)
+        }
+        let f = s.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: nil
+        )
+        foldedCache[key] = f
+        return f
+    }
+
     enum StockFilter: String, CaseIterable {
         case all = "Todos"
         case inStock = "En Stock"
@@ -202,11 +230,19 @@ class InventoryViewModel: ObservableObject {
         var result = products
 
         if !searchText.isEmpty {
-            result = result.filter {
-                $0.name.localizedCaseInsensitiveContains(searchText) ||
-                $0.sku.localizedCaseInsensitiveContains(searchText) ||
-                $0.barcode.contains(searchText) ||
-                $0.category.rawValue.localizedCaseInsensitiveContains(searchText)
+            // Sprint 4 micro-optimization: foldeamos el needle UNA vez por
+            // keystroke (vs 4 veces × N productos como antes) y usamos
+            // `contains` plano sobre los campos ya folded y cacheados.
+            // En un catálogo de 200 productos: ~600 invocaciones caras → 1.
+            let needle = searchText.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: nil
+            )
+            result = result.filter { p in
+                folded(p.name).contains(needle) ||
+                folded(p.sku).contains(needle) ||
+                p.barcode.contains(searchText) ||
+                folded(p.category.rawValue).contains(needle)
             }
         }
 
